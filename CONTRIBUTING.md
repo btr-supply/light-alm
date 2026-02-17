@@ -6,12 +6,10 @@
 2. Clone the repository
 3. Run `bun install` to install dependencies
 
-## Toolchain
+## Project Guidelines
 
-- **Runtime & package manager**: `bun` and `bunx` — NEVER use `npm`, `npx`, `yarn`, or `node`
-- **Type checking**: `bunx tsgo` — NEVER use `tsc`
-- **Linting**: `bunx oxlint` — NEVER use `eslint`
-- **Testing**: `bun test`
+This project has specific requirements for toolchain, code quality, and testing.
+**See [CLAUDE.md](./CLAUDE.md) for the authoritative project guidelines.**
 
 ## Commit Strategy
 
@@ -68,36 +66,9 @@ docs: document BTR force model in ARCHITECTURE.md
 
 ### Before Committing
 
-1. Run `bunx oxlint` to check for linting issues
-2. Run `bunx tsgo` to verify type safety
-3. Run `bun test` to ensure all tests pass
-4. Review your diff with `git diff --staged`
-
-## Code Quality
-
-Every implementation must be reviewed for:
-
-- **Performance** — no unnecessary allocations, O(n) over O(n*k)
-- **Genericity** — reusable patterns, no hardcoded values that should be configurable
-- **Conciseness** — minimal code to achieve the goal, no dead code, no over-engineering
-
-## Testing
-
-### Test Categories
-
-- **Unit tests** (`tests/unit/*.test.ts`): Pure function tests with no external dependencies
-- **Integration tests** (`tests/integration/*.test.ts`): Tests against real external APIs (skip gracefully when unavailable)
-- **E2E tests** (`tests/e2e/*.test.ts`): Full system flow tests
-- **Isolated tests** (`tests/isolated/*.isolated.ts`): Tests requiring process isolation for `mock.module`
-
-### Testing Rules
-
-- Test **exported functions only** — never reimplement logic inline
-- Every `expect()` must assert a **property of the system under test**, not a JS built-in
-- No `expect(true).toBe(true)` or other tautologies
-- Test names must match assertions
-- Mock only I/O boundaries (fetch, DB, Redis, RPC) — never mock pure functions
-- Helpers go in `tests/helpers.ts` — no duplicated setup
+1. Run `bun run check` to verify formatting, linting, and type safety
+2. Run `bun test` to ensure all tests pass
+3. Review your diff with `git diff --staged`
 
 ## Pull Requests
 
