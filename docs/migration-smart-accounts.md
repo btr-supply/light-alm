@@ -2,10 +2,23 @@
 
 ## Part 1: Migration to Account-Abstracted Safe Vaults
 
+### Account Model
+
+The current EOA setup uses **one private key per strategy** (e.g., USDC-USDT), with the same EOA address controlling positions on every chain. The Safe migration preserves this 1:1 mapping:
+
+| | EOA (current) | Safe (target) |
+|-|---------------|---------------|
+| **Per strategy** | 1 EOA (same PK everywhere) | 1 Safe address (same via CREATE2 on every chain) |
+| **Per chain** | EOA exists natively | Safe contract deployed per chain |
+| **Custody** | PK = full access | Multi-sig owners + module constraints |
+| **Automation** | Bot signs directly | Bot calls module (no owner sig needed) |
+
+Each strategy (e.g., `USDC-USDT-v1`) maps to exactly one Safe address. That Safe is deployed on every chain the strategy operates on, using CREATE2 for address determinism. The keeper bot replaces the EOA signer — it calls `BTRPolicyModule.execute()` instead of signing transactions directly.
+
 ### Architecture Overview
 
 ```
-                    Per Chain, Per Pair
+                    Per Strategy, Deployed Per Chain
     +-------------------------------------------------+
     |                                                 |
     |   SafeVault (Safe{Core})                        |
