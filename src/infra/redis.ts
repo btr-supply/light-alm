@@ -94,12 +94,9 @@ export async function getConfigPair(
 
 export async function getAllConfigPairs(redis: RedisClient): Promise<PairConfigEntry[]> {
   const ids = await getConfigPairIds(redis);
-  const entries: PairConfigEntry[] = [];
-  for (const id of ids) {
-    const entry = await getConfigPair(redis, id);
-    if (entry) entries.push(entry);
-  }
-  return entries;
+  if (!ids.length) return [];
+  const results = await Promise.all(ids.map((id) => getConfigPair(redis, id)));
+  return results.filter((e): e is PairConfigEntry => e !== null);
 }
 
 export async function setConfigPair(
