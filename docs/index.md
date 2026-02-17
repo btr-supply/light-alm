@@ -1,10 +1,10 @@
-# BTR Agentic ALM Documentation
+# BTR Light ALM Documentation
 
 ## General
 
 | Page | Description |
 |------|-------------|
-| [System Overview](overview.md) | What BTR Agentic ALM does and key differentiators |
+| [System Overview](overview.md) | What BTR Light ALM does and key differentiators |
 | [Architecture](architecture.md) | Process topology, data flow, module map, tech stack |
 | [Glossary](glossary.md) | Domain terms and abbreviations |
 

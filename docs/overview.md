@@ -1,6 +1,6 @@
 # System Overview
 
-BTR Agentic ALM is an autonomous concentrated-liquidity management system. It manages LP positions across 7 EVM chains and 16 DEXs (41 pools), executing rebalancing decisions every 15 minutes with no human intervention.
+BTR Light ALM is an autonomous concentrated-liquidity management system. It manages LP positions across 7 EVM chains and 16 DEXs (41 pools), executing rebalancing decisions every 15 minutes with no human intervention.
 
 ## What It Does
 

@@ -13,7 +13,7 @@ async function main() {
 
   if (command === "--help" || command === "-h") {
     console.log(`
-BTR Agentic ALM - Autonomous Liquidity Manager
+BTR Light ALM - Autonomous Liquidity Manager
 
 Usage: bun src/index.ts [command]
 

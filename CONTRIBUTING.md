@@ -1,4 +1,4 @@
-# Contributing to BTR Agentic ALM
+# Contributing to BTR Light ALM
 
 ## Development Setup
 

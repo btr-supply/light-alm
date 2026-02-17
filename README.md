@@ -1,10 +1,10 @@
-# BTR Agentic ALM
+# BTR Light ALM
 
 Autonomous concentrated liquidity management across 7 EVM chains, 20+ DEXes, and hundreds of pools.
 
 ## Overview
 
-BTR Agentic ALM manages Uniswap V3-style liquidity positions with zero human intervention. Each strategy (asset pair) runs a 5-step cycle every 15 minutes:
+BTR Light ALM manages Uniswap V3-style liquidity positions with zero human intervention. Each strategy (asset pair) runs a 5-step cycle every 15 minutes:
 
 ```mermaid
 flowchart LR
