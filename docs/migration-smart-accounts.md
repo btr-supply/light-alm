@@ -363,7 +363,7 @@ const EXTRACT_MAIN_PARAMS_ABI = [{
     { name: "bridge", type: "string" },
     { name: "sendingAssetId", type: "address" },
     { name: "receiver", type: "address" },
-    { name: "minAmount", type: "uint256" },
+    { name: "amount", type: "uint256" },
     { name: "destinationChainId", type: "uint256" },
     { name: "hasSourceSwaps", type: "bool" },
     { name: "hasDestinationCall", type: "bool" },
@@ -379,7 +379,6 @@ export interface LiFiQuoteParams {
   fromAddress: `0x${string}`;  // vault/safe address
   toAddress: `0x${string}`;    // destination vault address
   slippage?: number;           // decimal (0.005 = 0.5%)
-  allowIntents?: boolean;
 }
 
 export interface LiFiQuote {
@@ -422,7 +421,6 @@ export async function getLiFiQuote(params: LiFiQuoteParams): Promise<LiFiQuote> 
     toAddress: params.toAddress,
     slippage: (params.slippage ?? 0.005).toString(),
     order: "RECOMMENDED",
-    ...(params.allowIntents ? { allowIntents: "true" } : {}),
   });
 
   const resp = await retry(async () => {
@@ -446,7 +444,7 @@ export async function verifyLiFiCalldata(
 ): Promise<void> {
   const pub = getPublicClient(chainId);
 
-  const [, , receiver, , dstChain, , hasDestCall] = await pub.readContract({
+  const [, , receiver, , dstChain, , hasDestCall] = await pub.readContract({ // pure function — safe as staticcall
     address: LIFI_DIAMOND,
     abi: EXTRACT_MAIN_PARAMS_ABI,
     functionName: "extractMainParameters",
@@ -641,15 +639,10 @@ export async function executeViaModule(
 
 For v1, support intents passively:
 
-1. **Quote with intents enabled**: Add `allowIntents: true` to Li.Fi quote requests
+1. **Li.Fi routes intents transparently**: When a solver-based route is optimal, Li.Fi returns it as part of the standard quote response — no special parameter needed
 2. **Classic execution**: The keeper executes the quote's `transactionRequest` normally (even if it's an intent, the escrow is just a different on-chain contract)
 3. **Delivery handling**: For same-chain, delivery is atomic. For cross-chain, the solver delivers to `toAddress` (the destination vault)
-4. **No BTRIntentInbox needed in v1**: Since your vaults receive tokens directly and the keeper handles minting in the next cycle
-
-**When to use intents vs classic:**
-- Cross-chain: Always enable intents (solver competition = better rates)
-- Same-chain large trades (>$10k): Enable intents
-- Same-chain small trades: Classic is fine (atomic, no solver wait)
+4. **No BTRIntentInbox needed in v1**: Vaults receive tokens directly and the keeper handles minting in the next cycle
 
 ---
 
@@ -670,9 +663,8 @@ For v1, support intents passively:
 5. Update `src/executor.ts` (use module execution path, pass real tx hashes)
 
 ### Phase 3: Intent Support
-1. Add `allowIntents` parameter to quote requests
-2. Add cross-chain status polling (Li.Fi `/status` endpoint)
-3. Optionally deploy BTRIntentInbox for delivery callbacks
+1. Add cross-chain status polling (Li.Fi `/status` endpoint)
+2. Optionally deploy BTRIntentInbox for delivery callbacks
 
 ### Phase 4: Testing & Verification
 1. Unit tests for Li.Fi verification logic

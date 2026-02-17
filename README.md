@@ -1,6 +1,8 @@
 # BTR Light ALM
 
 Autonomous concentrated liquidity management across 7 EVM chains, 20+ DEXes, and hundreds of pools.
+Light port of BTR Supply ALM v1, full TypeScript, trimmed down and without vault infra.
+The EOAs can easily be replaced by [Smart Accounts](docs/migration-smart-accounts.md) to turn into a trustless protocol.
 
 ## Overview
 

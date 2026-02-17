@@ -57,3 +57,9 @@
 |------|-------------|
 | [Architecture](dashboard/overview.md) | Svelte 5 + Tailwind 4 SPA, polling, state management |
 | [Component Catalog](dashboard/components.md) | 15 custom components with theme token integration |
+
+## Migration
+
+| Page | Description |
+|------|-------------|
+| [EOA to Smart Accounts](migration-smart-accounts.md) | Safe vaults, BTRPolicyModule, Li.Fi verification, implementation phases |
