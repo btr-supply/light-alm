@@ -29,12 +29,11 @@ flowchart LR
 
 ```mermaid
 graph TD
-    O[Orchestrator + API :3001] -->|Bun.spawn| W1 & W2 & W3
+    O[Orchestrator + API :3001] -->|Bun.spawn| W1 & W2
 
     subgraph Workers
         W1[Worker: pair A]
         W2[Worker: pair B]
-        W3[Worker: pair N]
     end
 
     subgraph Data
@@ -50,10 +49,10 @@ graph TD
     end
 
     O <-->|lock / config| DF
-    W1 & W2 & W3 <-->|state / positions| DF
-    W1 & W2 & W3 -->|logs / snapshots| O2
-    W1 & W2 & W3 <--> CHAINS
-    W1 & W2 & W3 --> CEX & GECKO & BRIDGE
+    W1 & W2 <-->|state| DF
+    W1 & W2 -->|logs+epochs| O2
+    W1 & W2 <--> CHAINS
+    W1 & W2 --> CEX & GECKO & BRIDGE
 ```
 
 **Orchestrator** — Singleton protected by DragonflyDB lock. Spawns one worker per pair, monitors heartbeats, serves the REST API, respawns with exponential backoff.
