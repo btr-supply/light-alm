@@ -1,0 +1,30 @@
+{
+  "name": "@btr-supply/agentic-alm",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": ["shared", "dashboard"],
+  "scripts": {
+    "fmt": "bunx oxfmt src/ tests/ shared/ scripts/ dashboard/src/lib/",
+    "fmt:check": "bunx oxfmt --check src/ tests/ shared/ scripts/ dashboard/src/lib/",
+    "lint": "bunx oxlint src/ tests/ shared/ scripts/ dashboard/src/",
+    "lint:fix": "bunx oxlint --fix src/ tests/ shared/ scripts/ dashboard/src/",
+    "typecheck": "bunx tsgo --noEmit",
+    "check": "bun run fmt:check && bun run lint && bun run typecheck",
+    "dev": "bun run check && bun --watch src/index.ts",
+    "start": "bun run check && bun src/index.ts",
+    "orchestrate": "bun src/orchestrator.ts",
+    "test": "bun run check && bun test",
+    "test:integration": "INTEGRATION=true bun test"
+  },
+  "dependencies": {
+    "viem": "^2.23.0",
+    "ccxt": "^4.4.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@typescript/native-preview": "latest",
+    "oxlint": "latest",
+    "oxfmt": "latest"
+  }
+}
