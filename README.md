@@ -1,140 +1,144 @@
 # BTR Agentic ALM
 
-Autonomous concentrated liquidity management across 7 EVM chains and 16 DEXes (41 pools).
+Autonomous concentrated liquidity management across 7 EVM chains, 16 DEXes, and 41 pools.
 
 ## Overview
 
-BTR Agentic ALM is a distributed system that manages Uniswap V3-style liquidity positions with zero human intervention. Each strategy (asset pair) executes a 5-step cycle every 15 minutes:
+BTR Agentic ALM manages Uniswap V3-style liquidity positions with zero human intervention. Each strategy (asset pair) runs a 5-step cycle every 15 minutes:
 
-1. **Fetch** — Multi-source M1 OHLC candles (ccxt) + pool snapshots (GeckoTerminal)
-2. **Compute** — 3-force model (volatility, momentum, trend) across M15/H1/H4 timeframes
-3. **Optimize** — Nelder-Mead tunes 5 range parameters; water-fill allocates capital across pools
-4. **Decide** — PRA (pool reallocation), RS (range shift), or HOLD
-5. **Execute** — Burn, cross-chain swap/bridge (Li.Fi/Jumper), mint across V3/V4/LB DEXes
+```mermaid
+flowchart LR
+    F[Fetch] --> C[Compute] --> O[Optimize] --> D[Decide] --> E[Execute]
+    E -.->|next epoch| F
+
+    F@{ shape: process }
+    C@{ shape: process }
+    O@{ shape: process }
+    D@{ shape: diamond }
+    E@{ shape: process }
+```
+
+| Step | What happens |
+|------|-------------|
+| **Fetch** | Multi-source M1 OHLC candles (ccxt) + pool snapshots (GeckoTerminal) |
+| **Compute** | 3-force model (volatility, momentum, trend) across M15/H1/H4 timeframes |
+| **Optimize** | Nelder-Mead tunes 5 range parameters; water-fill allocates capital across pools |
+| **Decide** | PRA (pool reallocation), RS (range shift), or HOLD |
+| **Execute** | Burn, rebalance via Li.Fi/Jumper, mint across V3/V4/LB DEXes |
 
 ## Architecture
 
 ```mermaid
 graph TD
-    subgraph "Orchestrator (singleton)"
-        O[Orchestrator] -->|Bun.spawn| W1[Worker: USDC-USDT]
-        O -->|Bun.spawn| W2[Worker: WETH-USDC]
-        O -->|Bun.spawn| W3[Worker: ...]
+    subgraph Orchestrator
+        O[Orchestrator] -->|Bun.spawn| W1[Worker: pair A]
+        O -->|Bun.spawn| W2[Worker: pair B]
+        O -->|Bun.spawn| W3[Worker: pair N]
         O --- API[API Server :3001]
         O --- HM[Health Monitor]
     end
 
-    subgraph "Data Layer"
+    subgraph Data
         DF[(DragonflyDB)]
         O2[(OpenObserve)]
     end
 
-    O <-->|lock/heartbeat/state| DF
-    W1 <-->|positions/optimizer/epoch| DF
-    W2 <-->|positions/optimizer/epoch| DF
-    W3 <-->|positions/optimizer/epoch| DF
+    O <-->|lock / heartbeat / state| DF
+    W1 <-->|positions / optimizer / epoch| DF
+    W2 <-->|positions / optimizer / epoch| DF
+    W3 <-->|positions / optimizer / epoch| DF
 
-    W1 -->|logs/analyses/snapshots| O2
-    W2 -->|logs/analyses/snapshots| O2
-    W3 -->|logs/analyses/snapshots| O2
+    W1 -->|logs / snapshots| O2
+    W2 -->|logs / snapshots| O2
+    W3 -->|logs / snapshots| O2
 
-    subgraph "External"
-        CEX[CEX APIs<br/>ccxt]
+    subgraph External
+        CEX[CEX APIs · ccxt]
         GECKO[GeckoTerminal]
-        CHAINS[EVM Chains<br/>viem]
+        CHAINS[EVM Chains · viem]
         BRIDGE[Li.Fi / Jumper]
     end
 
-    W1 --> CEX
-    W1 --> GECKO
+    W1 --> CEX & GECKO & BRIDGE
     W1 <--> CHAINS
-    W1 --> BRIDGE
 ```
 
-**Orchestrator** — Singleton process protected by DragonflyDB lock. Spawns one worker per pair, monitors heartbeats, respawns on failure with exponential backoff.
+**Orchestrator** — Singleton protected by DragonflyDB lock. Spawns one worker per pair, monitors heartbeats, respawns with exponential backoff.
 
-**Workers** — Independent processes per asset pair. Each runs its own scheduler loop, maintains in-memory candle buffer, and executes on-chain transactions.
+**Workers** — Independent process per asset pair. Runs its own scheduler loop, candle buffer, and on-chain execution.
 
-**DragonflyDB** — Hot state: positions, optimizer warm-start, epoch counters, regime state, config CRUD.
+**DragonflyDB** — Hot state: positions, optimizer warm-start, epoch counters, config CRUD.
 
-**OpenObserve** — Cold storage: logs, candles, pool analyses, allocations, epoch snapshots, transaction logs.
+**OpenObserve** — Cold storage: logs, candles, pool analyses, allocations, epoch snapshots.
 
 ## Supported Networks
 
 | Chain | ID | DEXes |
-|-------|----|----|
+|-------|---:|-------|
 | Ethereum | 1 | Uniswap V3/V4, PancakeSwap V3 |
-| BSC | 56 | PancakeSwap V3/V4, Uniswap V3/V4 |
+| BNB Chain | 56 | Uniswap V3/V4, PancakeSwap V3/V4 |
 | Polygon | 137 | Uniswap V3/V4, QuickSwap V3 |
-| Base | 8453 | Aerodrome V3, PancakeSwap V3, Uniswap V4 |
-| Arbitrum | 42161 | Uniswap V3/V4, Camelot V3 |
-| Avalanche | 43114 | Uniswap V3/V4, Pangolin V3, Blackhole V3, Pharaoh, Trader Joe V2/V2.1/V2.2 (LB) |
+| Base | 8453 | Uniswap V3/V4, Aerodrome V3, PancakeSwap V3 |
+| Arbitrum | 42161 | Uniswap V3/V4, PancakeSwap V3, Camelot V3, Ramses V3 |
+| Avalanche | 43114 | Uniswap V3, Pangolin V3, Blackhole V3, Pharaoh V3, Joe V2/V2.1/V2.2 |
 | HyperEVM | 999 | Ramses V3, Project X V3, Hybra V4 |
 
-**DEX Families:** V3 (Uniswap-style), Algebra, Aerodrome, V4, LB (Liquidity Book)
+**DEX families:** V3 (Uniswap-style), Algebra (V3 fork), V4, LB (Liquidity Book)
 
 ## Quick Start
 
 ```bash
-# Install dependencies
 bun install
 
-# Run single-instance (dev/CLI mode)
+# Development (single-instance CLI mode)
 bun run start
 
-# Run orchestrated (production mode)
+# Production (orchestrated multi-worker)
 bun run orchestrate
 
-# Run tests
+# Tests
 bun test
 ```
 
 ### Docker
 
 ```bash
-# Start infrastructure + backend + dashboard
 docker compose up -d
-
-# Services:
-# - DragonflyDB: localhost:6379
-# - OpenObserve: localhost:5080
-# - API: localhost:3001
-# - Dashboard: localhost:80
+# DragonflyDB :6379 · OpenObserve :5080 · API :3001 · Dashboard :80
 ```
 
 ### Dashboard
 
 ```bash
 cd dashboard && bun install && bun run dev
+# http://localhost:5173 — Cmd+K for doc search
 ```
-
-Open `http://localhost:5173`. Press `Cmd+K` for documentation search.
 
 ## Documentation
 
-| Section | Description |
-|---------|-------------|
-| [System Overview](docs/overview.md) | What it does, key differentiators |
+| Section | Topics |
+|---------|--------|
+| [Overview](docs/overview.md) | System purpose, key differentiators |
 | [Architecture](docs/architecture.md) | Process topology, data flow, module map |
-| [Strategy: 3-Force Model](docs/strategy/forces.md) | Volatility, momentum, trend signals |
-| [Strategy: Range Optimizer](docs/strategy/optimizer.md) | Nelder-Mead online tuning |
-| [Strategy: Decision Engine](docs/strategy/decision.md) | PRA / RS / HOLD logic |
-| [Execution: Position Adapters](docs/execution/positions.md) | V3, V4, LB mint/burn |
-| [Infrastructure: Orchestrator](docs/infrastructure/orchestrator.md) | Worker spawning, health monitoring |
-| [Infrastructure: API](docs/infrastructure/api.md) | REST endpoints, authentication |
-| [Full Index](docs/index.md) | All documentation pages |
+| [Strategy](docs/strategy/forces.md) | 3-force model, [range optimizer](docs/strategy/optimizer.md), [allocation](docs/strategy/allocation.md), [decisions](docs/strategy/decision.md) |
+| [Execution](docs/execution/positions.md) | Position adapters, [rebalancing](docs/execution/swap.md), [TX lifecycle](docs/execution/transactions.md) |
+| [Infrastructure](docs/infrastructure/orchestrator.md) | Orchestration, [API](docs/infrastructure/api.md), [observability](docs/infrastructure/observability.md) |
+| [Configuration](docs/config/chains.md) | [Chains](docs/config/chains.md), [DEXes](docs/config/dexs.md), [pools](docs/config/pools.md), [tokens](docs/config/tokens.md) |
+| [Dashboard](docs/dashboard/overview.md) | Svelte 5 SPA, [components](docs/dashboard/components.md) |
+| [Glossary](docs/glossary.md) | Domain terms and abbreviations |
+| **[Full Index](docs/index.md)** | **All documentation pages** |
 
 ## Tech Stack
 
 | Layer | Technology |
 |-------|------------|
-| Runtime | Bun (TypeScript, no transpilation) |
-| EVM | viem (multicall, contract reads/writes) |
-| CEX Data | ccxt (Binance, Bybit, OKX, MEXC, Gate, Bitget) |
-| Pool Data | GeckoTerminal REST API |
-| Hot State | DragonflyDB (Redis-compatible) |
-| Cold Storage | OpenObserve (SQL queries, buffered ingestion) |
-| Swap/Bridge | Li.Fi / Jumper API |
+| Runtime | Bun |
+| EVM | viem |
+| CEX Data | ccxt |
+| Pool Data | GeckoTerminal |
+| Hot State | DragonflyDB |
+| Cold Storage | OpenObserve |
+| Swap/Bridge | Li.Fi / Jumper |
 | Frontend | Svelte 5 + Tailwind 4 |
 
 ## Contributing
