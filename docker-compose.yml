@@ -26,7 +26,7 @@ services:
       - o2-data:/data
     environment:
       ZO_ROOT_USER_EMAIL: admin@btr.supply
-      ZO_ROOT_USER_PASSWORD: ${O2_PASSWORD}
+      ZO_ROOT_USER_PASSWORD: ${O2_PASSWORD:-btr_dev_2024}
       ZO_DATA_DIR: /data
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:5080/healthz"]
@@ -35,6 +35,7 @@ services:
       start_period: 10s
 
   backend:
+    profiles: [prod]
     build: .
     restart: unless-stopped
     expose:
@@ -64,6 +65,7 @@ services:
       start_period: 15s
 
   dashboard:
+    profiles: [prod]
     build:
       context: .
       dockerfile: dashboard/Dockerfile
