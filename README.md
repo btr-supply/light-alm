@@ -83,40 +83,59 @@ graph TD
 
 ```bash
 bun install
-
-# Development (single-instance CLI mode)
-bun run start
-
-# Production (orchestrated multi-worker)
-bun run orchestrate
-
-# Tests
-bun test
+cp .env.example .env   # configure private keys and pairs
 ```
 
-### Docker
+### Development
+
+Dev mode runs the DB stack (DragonflyDB + OpenObserve) in Docker while the backend and dashboard run locally with hot reload.
 
 ```bash
-docker compose up -d
+# Terminal 1 — infrastructure + backend (watch mode)
+bun run dev
+
+# Terminal 2 — dashboard (Vite dev server with HMR)
+bun run dev:front
+# http://localhost:5173 — Cmd+K for doc search
+```
+
+| Script | What it does |
+|--------|-------------|
+| `bun run dev` | Starts Docker DB stack + backend with `--watch` |
+| `bun run dev:infra` | Starts only DragonflyDB + OpenObserve containers |
+| `bun run dev:back` | Runs backend only (no Docker, no checks) |
+| `bun run dev:front` | Runs dashboard Vite dev server (port 5173) |
+| `bun run start` | Single-instance CLI mode (no Docker) |
+| `bun run orchestrate` | Multi-worker orchestrated mode (no Docker) |
+
+### Production
+
+Prod mode containerizes everything: DB stack, backend, and dashboard.
+
+```bash
+bun run prod
 # DragonflyDB :6379 · OpenObserve :5080 · API :3001 · Dashboard :80
 ```
 
-### Dashboard
+| Script | What it does |
+|--------|-------------|
+| `bun run prod` | Builds and starts all 4 containers |
+| `bun run prod:down` | Stops and removes all containers |
+
+### Tests
 
 ```bash
-cd dashboard && bun install && bun run dev
-# http://localhost:5173 — Cmd+K for doc search
+bun test
 ```
 
 ## Documentation
 
 | Section | Topics |
 |---------|--------|
-| [Overview](docs/overview.md) | System purpose, key differentiators |
 | [Architecture](docs/architecture.md) | Process topology, data flow, module map |
 | [Strategy](docs/strategy/forces.md) | 3-force model, [range optimizer](docs/strategy/optimizer.md), [allocation](docs/strategy/allocation.md), [decisions](docs/strategy/decision.md) |
 | [Execution](docs/execution/positions.md) | Position adapters, [rebalancing](docs/execution/swap.md), [TX lifecycle](docs/execution/transactions.md) |
-| [Infrastructure](docs/infrastructure/orchestrator.md) | Orchestration, [API](docs/infrastructure/api.md), [observability](docs/infrastructure/observability.md) |
+| [Infrastructure](docs/infrastructure/orchestrator.md) | Orchestration, [API](docs/infrastructure/api.md), [observability](docs/infrastructure/observability.md), [deployment](docs/infrastructure/deployment.md) |
 | [Configuration](docs/config/chains.md) | [Chains](docs/config/chains.md), [DEXes](docs/config/dexs.md), [pools](docs/config/pools.md), [tokens](docs/config/tokens.md) |
 | [Dashboard](docs/dashboard/overview.md) | Svelte 5 SPA, [components](docs/dashboard/components.md) |
 | [Glossary](docs/glossary.md) | Domain terms and abbreviations |
