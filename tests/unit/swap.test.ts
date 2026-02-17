@@ -1,4 +1,4 @@
-import { describe, expect, test, mock, beforeAll } from "bun:test";
+import { describe, expect, test, mock, beforeAll, beforeEach, afterEach } from "bun:test";
 import { verifyCalldata, waitForArrival, lifiQuote, limiters } from "../../src/execution/swap";
 import { RateLimiter } from "../../src/utils";
 import { silenceLog } from "../helpers";
@@ -98,49 +98,44 @@ const MOCK_LIFI_QUOTE = {
 };
 
 describe("lifiQuote (lifi backend)", () => {
+  let originalFetch: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
   test("parses a valid Li.Fi quote response", async () => {
-    const originalFetch = globalThis.fetch;
     globalThis.fetch = mock(() =>
       Promise.resolve(new Response(JSON.stringify(MOCK_LIFI_QUOTE), { status: 200 })),
     ) as typeof fetch;
 
-    try {
-      const result = await lifiQuote(QUOTE_PARAMS, "lifi");
-      expect(result).not.toBeNull();
-      expect(result!.type).toBe("swap");
-      expect(result!.estimate.toAmount).toBe("999000");
-      expect(result!.estimate.toAmountMin).toBe("994000");
-      expect(result!.transactionRequest.to).toBe("0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE");
-      expect(result!.action.fromChainId).toBe(1);
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    const result = await lifiQuote(QUOTE_PARAMS, "lifi");
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe("swap");
+    expect(result!.estimate.toAmount).toBe("999000");
+    expect(result!.estimate.toAmountMin).toBe("994000");
+    expect(result!.transactionRequest.to).toBe("0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE");
+    expect(result!.action.fromChainId).toBe(1);
   });
 
   test("returns null on HTTP error", async () => {
-    const originalFetch = globalThis.fetch;
     globalThis.fetch = mock(() =>
       Promise.resolve(new Response("Bad Request", { status: 400 })),
     ) as typeof fetch;
 
-    try {
-      const result = await lifiQuote(QUOTE_PARAMS, "lifi");
-      expect(result).toBeNull();
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    const result = await lifiQuote(QUOTE_PARAMS, "lifi");
+    expect(result).toBeNull();
   });
 
   test("returns null on fetch failure", async () => {
-    const originalFetch = globalThis.fetch;
     globalThis.fetch = mock(() => Promise.reject(new Error("Network error"))) as typeof fetch;
 
-    try {
-      const result = await lifiQuote(QUOTE_PARAMS, "lifi");
-      expect(result).toBeNull();
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    const result = await lifiQuote(QUOTE_PARAMS, "lifi");
+    expect(result).toBeNull();
   }, 30_000);
 });
 
@@ -184,8 +179,17 @@ const MOCK_JUMPER_TX_STEP = {
 };
 
 describe("lifiQuote (jumper backend)", () => {
+  let originalFetch: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
   test("parses a valid Jumper two-step response", async () => {
-    const originalFetch = globalThis.fetch;
     let callIdx = 0;
     globalThis.fetch = mock((url: string) => {
       callIdx++;
@@ -197,22 +201,17 @@ describe("lifiQuote (jumper backend)", () => {
       return Promise.resolve(new Response(JSON.stringify(MOCK_JUMPER_TX_STEP), { status: 200 }));
     }) as typeof fetch;
 
-    try {
-      const result = await lifiQuote(QUOTE_PARAMS, "jumper");
-      expect(result).not.toBeNull();
-      expect(result!.type).toBe("swap");
-      expect(result!.estimate.toAmount).toBe("999500");
-      expect(result!.estimate.toAmountMin).toBe("994500");
-      expect(result!.transactionRequest.to).toBe("0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE");
-      expect(result!.transactionRequest.data).toBe("0xabcd");
-      expect(result!.action.fromChainId).toBe(1);
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    const result = await lifiQuote(QUOTE_PARAMS, "jumper");
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe("swap");
+    expect(result!.estimate.toAmount).toBe("999500");
+    expect(result!.estimate.toAmountMin).toBe("994500");
+    expect(result!.transactionRequest.to).toBe("0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE");
+    expect(result!.transactionRequest.data).toBe("0xabcd");
+    expect(result!.action.fromChainId).toBe(1);
   });
 
   test("returns null when feeCosts present", async () => {
-    const originalFetch = globalThis.fetch;
     const routesWithFees = {
       routes: [
         {
@@ -236,37 +235,23 @@ describe("lifiQuote (jumper backend)", () => {
       Promise.resolve(new Response(JSON.stringify(routesWithFees), { status: 200 })),
     ) as typeof fetch;
 
-    try {
-      const result = await lifiQuote(QUOTE_PARAMS, "jumper");
-      expect(result).toBeNull();
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    const result = await lifiQuote(QUOTE_PARAMS, "jumper");
+    expect(result).toBeNull();
   });
 
   test("returns null when no routes", async () => {
-    const originalFetch = globalThis.fetch;
     globalThis.fetch = mock(() =>
       Promise.resolve(new Response(JSON.stringify({ routes: [] }), { status: 200 })),
     ) as typeof fetch;
 
-    try {
-      const result = await lifiQuote(QUOTE_PARAMS, "jumper");
-      expect(result).toBeNull();
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    const result = await lifiQuote(QUOTE_PARAMS, "jumper");
+    expect(result).toBeNull();
   });
 
   test("returns null on routes fetch failure", async () => {
-    const originalFetch = globalThis.fetch;
     globalThis.fetch = mock(() => Promise.reject(new Error("Network error"))) as typeof fetch;
 
-    try {
-      const result = await lifiQuote(QUOTE_PARAMS, "jumper");
-      expect(result).toBeNull();
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    const result = await lifiQuote(QUOTE_PARAMS, "jumper");
+    expect(result).toBeNull();
   });
 });

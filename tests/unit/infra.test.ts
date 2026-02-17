@@ -2,8 +2,10 @@
  * Infrastructure tests: Redis locks, O2 client, logger
  * Fast, focused unit tests with minimal mocking.
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { RedisClient } from "bun";
+
+const { structuredLog } = await import("../../src/infra/logger");
 
 // Skip Redis tests if no local Redis/DragonflyDB available
 const withRedis = async <T>(fn: (r: RedisClient) => Promise<T>): Promise<T | null> => {
@@ -86,93 +88,60 @@ describe("Redis: lock primitives", () => {
 });
 
 describe("O2: client buffering", () => {
-  test("ingest and flush works without error", async () => {
-    const url = process.env.O2_URL;
-    if (!url) {
-      console.log("  Skipping O2 test (O2_URL not set)");
-      return;
-    }
-
-    const { O2Client } = await import("../src/infra/o2");
-    const client = new O2Client(url, "test", process.env.O2_TOKEN || "test");
-
-    const entries = Array.from({ length: 10 }, (_, i) => ({
-      _timestamp: new Date().toISOString(),
-      level: "info" as const,
-      msg: `test message ${i}`,
-    }));
-
-    // Ingest and flush should complete without throwing
-    client.ingest("test_stream", entries);
-    await client.flush();
-    await client.shutdown();
-
-    // If we got here without throwing, the client works
-  });
-
   test("flush resolves when called", async () => {
     const url = process.env.O2_URL;
     if (!url) return;
 
-    const { O2Client } = await import("../src/infra/o2");
+    const { O2Client } = await import("../../src/infra/o2");
     const client = new O2Client(url, "test", process.env.O2_TOKEN || "test");
 
     client.ingest("test", [{ _timestamp: new Date().toISOString(), msg: "test" }]);
 
-    // Flush should resolve (not hang or throw)
     await expect(client.flush()).resolves.toBeUndefined();
     await client.shutdown();
   });
 });
 
 describe("Logger: level filtering", () => {
+  let origLog: typeof console.log;
+  let origInfo: typeof console.info;
+  let origWarn: typeof console.warn;
+  const logs: string[] = [];
+
+  beforeEach(() => {
+    logs.length = 0;
+    origLog = console.log;
+    origInfo = console.info;
+    origWarn = console.warn;
+    console.log = (...args: unknown[]) => logs.push(args.join(" "));
+    console.info = (...args: unknown[]) => logs.push(args.join(" "));
+    console.warn = (...args: unknown[]) => logs.push(args.join(" "));
+  });
+
+  afterEach(() => {
+    console.log = origLog;
+    console.info = origInfo;
+    console.warn = origWarn;
+    structuredLog.setLevel("info");
+  });
+
   test("setLevel accepts all valid levels", () => {
-    const { structuredLog } = require("../../src/infra/logger");
     for (const level of ["debug", "info", "warn", "error"]) {
       expect(() => structuredLog.setLevel(level)).not.toThrow();
     }
   });
 
   test("emit calls produce structured output", () => {
-    const { structuredLog } = require("../../src/infra/logger");
     structuredLog.setLevel("debug");
-
-    // Logger uses console.info for info level, console.log for debug
-    const logs: string[] = [];
-    const origInfo = console.info;
-    console.info = (...args: any[]) => logs.push(args.join(" "));
-    try {
-      structuredLog.info("test-msg-123");
-    } finally {
-      console.info = origInfo;
-    }
-
+    structuredLog.info("test-msg-123");
     expect(logs.some((l) => l.includes("test-msg-123"))).toBe(true);
-    structuredLog.setLevel("info");
   });
 
   test("level filtering suppresses lower levels", () => {
-    const { structuredLog } = require("../../src/infra/logger");
     structuredLog.setLevel("error");
-
-    const logs: string[] = [];
-    const origLog = console.log;
-    const origInfo = console.info;
-    const origWarn = console.warn;
-    console.log = (...args: any[]) => logs.push(args.join(" "));
-    console.info = (...args: any[]) => logs.push(args.join(" "));
-    console.warn = (...args: any[]) => logs.push(args.join(" "));
-    try {
-      structuredLog.debug("should-not-appear");
-      structuredLog.info("should-not-appear");
-      structuredLog.warn("should-not-appear");
-    } finally {
-      console.log = origLog;
-      console.info = origInfo;
-      console.warn = origWarn;
-    }
-
+    structuredLog.debug("should-not-appear");
+    structuredLog.info("should-not-appear");
+    structuredLog.warn("should-not-appear");
     expect(logs.some((l) => l.includes("should-not-appear"))).toBe(false);
-    structuredLog.setLevel("info");
   });
 });

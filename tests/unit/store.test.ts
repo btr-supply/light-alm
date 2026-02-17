@@ -22,9 +22,9 @@ import {
 } from "../../src/data/store";
 import type { PoolSnapshot, PoolAnalysis, TxLogEntry } from "../../src/types";
 
-const db = initPairStore("TEST", ":memory:");
-
 describe("M1 candles", () => {
+  const db = initPairStore("CANDLE-TEST", ":memory:");
+
   test("save and retrieve candles", () => {
     const candles = [
       { ts: 1000, o: 1, h: 1.1, l: 0.9, c: 1.05, v: 500 },
@@ -50,6 +50,8 @@ describe("M1 candles", () => {
 });
 
 describe("pool snapshots", () => {
+  const db = initPairStore("SNAP-TEST-POOL", ":memory:");
+
   test("save and retrieve last snapshot", () => {
     const addr = "0x0000000000000000000000000000000000000001" as `0x${string}`;
     const snap1: PoolSnapshot = {
@@ -86,6 +88,8 @@ describe("pool snapshots", () => {
 });
 
 describe("positions", () => {
+  const db = initPairStore("POS-TEST", ":memory:");
+
   test("CRUD lifecycle", () => {
     const pos = {
       id: "test-1",
@@ -117,6 +121,7 @@ describe("positions", () => {
 });
 
 describe("pool analysis", () => {
+  const db = initPairStore("ANALYSIS-TEST", ":memory:");
   const analysisTs = 999000;
   const addr = "0x0000000000000000000000000000000000000001" as `0x${string}`;
 
@@ -195,6 +200,8 @@ describe("pool analysis", () => {
 });
 
 describe("pair allocation", () => {
+  const db = initPairStore("PAIR-ALLOC-TEST", ":memory:");
+
   test("save and retrieve pair allocation", () => {
     savePairAllocation(db, {
       ts: Date.now(),
@@ -222,6 +229,8 @@ describe("pair allocation", () => {
 });
 
 describe("tx log", () => {
+  const db = initPairStore("TX-LOG-TEST", ":memory:");
+
   test("log and retrieve transactions", () => {
     const entry: TxLogEntry = {
       ts: Date.now(),

@@ -116,6 +116,43 @@ describe("retry", () => {
     ).rejects.toThrow("persistent");
     expect(callCount).toBe(3); // initial + 2 retries
   });
+
+  test("maxRetries=0 means single attempt, no retries", async () => {
+    let attempt = 0;
+    await expect(
+      retry(
+        async () => {
+          attempt++;
+          throw new Error("fail");
+        },
+        0,
+        1,
+      ),
+    ).rejects.toThrow("fail");
+    expect(attempt).toBe(1);
+  });
+
+  test("backoff delays increase exponentially", async () => {
+    const timestamps: number[] = [];
+    let attempt = 0;
+    const backoffBase = 50;
+    await retry(
+      async () => {
+        timestamps.push(Date.now());
+        attempt++;
+        if (attempt <= 2) throw new Error("transient");
+        return "done";
+      },
+      2,
+      backoffBase,
+    );
+
+    const gap1 = timestamps[1] - timestamps[0];
+    const gap2 = timestamps[2] - timestamps[1];
+    expect(gap1).toBeGreaterThanOrEqual(40);
+    expect(gap2).toBeGreaterThanOrEqual(80);
+    expect(gap2).toBeGreaterThan(gap1);
+  });
 });
 
 describe("sortTokens", () => {
@@ -134,6 +171,22 @@ describe("sortTokens", () => {
   test("case insensitive comparison", () => {
     const [a] = sortTokens("0xAAAA" as `0x${string}`, "0xbbbb" as `0x${string}`);
     expect(a.toLowerCase()).toBe("0xaaaa");
+  });
+
+  test("idempotent: sorting twice yields same result", () => {
+    const x = "0xdead000000000000000000000000000000000000" as `0x${string}`;
+    const y = "0xbeef000000000000000000000000000000000000" as `0x${string}`;
+    const [a1, b1] = sortTokens(x, y);
+    const [a2, b2] = sortTokens(a1, b1);
+    expect(a1).toBe(a2);
+    expect(b1).toBe(b2);
+  });
+
+  test("equal addresses pass through", () => {
+    const addr = "0xaaaa000000000000000000000000000000000000" as `0x${string}`;
+    const [a, b] = sortTokens(addr, addr);
+    expect(a).toBe(addr);
+    expect(b).toBe(addr);
   });
 });
 
@@ -161,6 +214,14 @@ describe("sortTokensWithAmounts", () => {
     expect(amounts[0]).toBe(200n);
     expect(amounts[1]).toBe(100n);
   });
+
+  test("zero amounts are swapped correctly", () => {
+    const lo = "0x1111111111111111111111111111111111111111" as `0x${string}`;
+    const hi = "0x9999999999999999999999999999999999999999" as `0x${string}`;
+    const { tokens, amounts } = sortTokensWithAmounts(hi, lo, 0n, 500n);
+    expect(tokens).toEqual([lo, hi]);
+    expect(amounts).toEqual([500n, 0n]);
+  });
 });
 
 describe("RateLimiter", () => {
@@ -171,6 +232,24 @@ describe("RateLimiter", () => {
     await limiter.wait();
     const elapsed = Date.now() - start;
     expect(elapsed).toBeGreaterThanOrEqual(20);
+  });
+
+  test("zero-interval limiter executes without delay", async () => {
+    const limiter = new RateLimiter(0);
+    const start = Date.now();
+    await limiter.wait();
+    await limiter.wait();
+    await limiter.wait();
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(500);
+  });
+
+  test("multiple queued calls execute in FIFO order", async () => {
+    const limiter = new RateLimiter(20);
+    const order: number[] = [];
+    const promises = [1, 2, 3, 4].map((n) => limiter.wait().then(() => order.push(n)));
+    await Promise.all(promises);
+    expect(order).toEqual([1, 2, 3, 4]);
   });
 });
 
@@ -189,6 +268,22 @@ describe("withFallback", () => {
       "test",
     );
     expect(result).toBe(99);
+  });
+
+  test("returns fallback for rejected promises", async () => {
+    const result = await withFallback(() => Promise.reject(new Error("rejected")), -1, "ctx");
+    expect(result).toBe(-1);
+  });
+
+  test("preserves complex return types", async () => {
+    const fallback = { items: [] as number[], count: 0 };
+    const result = await withFallback(
+      async () => ({ items: [1, 2, 3], count: 3 }),
+      fallback,
+      "ctx",
+    );
+    expect(result.items).toEqual([1, 2, 3]);
+    expect(result.count).toBe(3);
   });
 });
 

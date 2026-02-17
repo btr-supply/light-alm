@@ -110,6 +110,15 @@ mock.module("../../src/execution/positions", () => {
   return p;
 });
 
+// ---- Test fixtures (must be before setDefaultBalances) ----
+
+const POOL1_ADDR = "0x0000000000000000000000000000000000000001" as `0x${string}`;
+const POOL2_ADDR = "0x0000000000000000000000000000000000000002" as `0x${string}`;
+const TOKEN0_ADDR = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as `0x${string}`;
+const TOKEN1_ADDR = "0xdAC17F958D2ee523a2206206994597C13D831ec7" as `0x${string}`;
+const PRIVATE_KEY =
+  "0x0000000000000000000000000000000000000000000000000000000000000001" as `0x${string}`;
+
 const defaultBalances = new Map<string, bigint>();
 
 function setDefaultBalances(bal0: bigint, bal1: bigint) {
@@ -168,14 +177,7 @@ mock.module("../../src/execution/tx", () => {
 // ---- Import module under test (after mocks) ----
 const { executePRA, executeRS } = await import("../../src/executor");
 
-// ---- Test fixtures ----
-
-const POOL1_ADDR = "0x0000000000000000000000000000000000000001" as `0x${string}`;
-const POOL2_ADDR = "0x0000000000000000000000000000000000000002" as `0x${string}`;
-const TOKEN0_ADDR = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as `0x${string}`;
-const TOKEN1_ADDR = "0xdAC17F958D2ee523a2206206994597C13D831ec7" as `0x${string}`;
-const PRIVATE_KEY =
-  "0x0000000000000000000000000000000000000000000000000000000000000001" as `0x${string}`;
+// ---- Helper factories ----
 
 function makePair(overrides?: Partial<PairConfig>): PairConfig {
   return {
@@ -379,8 +381,7 @@ describe("executePRA", () => {
   });
 
   test("allocation amount uses pct of balance", async () => {
-    mockBalance0 = 10000_000000n;
-    mockBalance1 = 10000_000000n;
+    setDefaultBalances(10000_000000n, 10000_000000n);
     const pair = makePair();
     const allocs = [makeAllocation(POOL1_ADDR, 0.5)];
     await executePRA(fakeDb, pair, allocs, "PRA", PRIVATE_KEY);
@@ -392,27 +393,7 @@ describe("executePRA", () => {
 // ---- logTransaction (tested indirectly via executePRA) ----
 
 describe("logTransaction (via executePRA)", () => {
-  beforeEach(() => {
-    resetCalls();
-    mockPositions.length = 0;
-    burnResult = {
-      success: true,
-      amount0: 500_000000n,
-      amount1: 500_000000n,
-      hash: "0xburn" as `0x${string}`,
-      gasUsed: 150000n,
-      gasPrice: 1000000000n,
-    };
-    mintResult = {
-      position: makePosition(),
-      txHash: "0xmint" as `0x${string}`,
-      gasUsed: 200000n,
-      gasPrice: 1000000000n,
-    };
-    mockBalance0 = 1000_000000n;
-    mockBalance1 = 1000_000000n;
-    mockBalanceMap = null;
-  });
+  beforeEach(resetMocks);
 
   test("constructs tx log entry with correct fields", async () => {
     const pos = makePosition();
@@ -466,27 +447,7 @@ describe("logTransaction (via executePRA)", () => {
 // ---- executeRS ----
 
 describe("executeRS", () => {
-  beforeEach(() => {
-    resetCalls();
-    mockPositions.length = 0;
-    burnResult = {
-      success: true,
-      amount0: 500_000000n,
-      amount1: 500_000000n,
-      hash: "0xburn" as `0x${string}`,
-      gasUsed: 150000n,
-      gasPrice: 1000000000n,
-    };
-    mintResult = {
-      position: makePosition(),
-      txHash: "0xmint" as `0x${string}`,
-      gasUsed: 200000n,
-      gasPrice: 1000000000n,
-    };
-    mockBalance0 = 1000_000000n;
-    mockBalance1 = 1000_000000n;
-    mockBalanceMap = null;
-  });
+  beforeEach(resetMocks);
 
   const oldRange: Range = {
     min: 0.99,
@@ -627,29 +588,9 @@ describe("executeRS", () => {
 // ---- rebalanceTokenRatio (tested indirectly via executePRA) ----
 
 describe("rebalanceTokenRatio (via executePRA)", () => {
-  beforeEach(() => {
-    resetCalls();
-    mockPositions.length = 0;
-    burnResult = {
-      success: true,
-      amount0: 500_000000n,
-      amount1: 500_000000n,
-      hash: "0xburn" as `0x${string}`,
-      gasUsed: 150000n,
-      gasPrice: 1000000000n,
-    };
-    mintResult = {
-      position: makePosition(),
-      txHash: "0xmint" as `0x${string}`,
-      gasUsed: 200000n,
-      gasPrice: 1000000000n,
-    };
-    mockBalanceMap = null;
-  });
+  beforeEach(resetMocks);
 
   test("no swap when balances are balanced (imbalance <= 5%)", async () => {
-    mockBalance0 = 1000_000000n;
-    mockBalance1 = 1000_000000n;
     const pair = makePair();
     const allocs = [makeAllocation()];
     await executePRA(fakeDb, pair, allocs, "PRA", PRIVATE_KEY);
@@ -658,8 +599,7 @@ describe("rebalanceTokenRatio (via executePRA)", () => {
   });
 
   test("triggers swap when significantly imbalanced", async () => {
-    mockBalance0 = 900_000000n;
-    mockBalance1 = 100_000000n;
+    setDefaultBalances(900_000000n, 100_000000n);
     const pair = makePair();
     const allocs = [makeAllocation()];
     await executePRA(fakeDb, pair, allocs, "PRA", PRIVATE_KEY);
@@ -674,27 +614,7 @@ const BSC_TOKEN0_ADDR = "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d" as `0x${str
 const BSC_TOKEN1_ADDR = "0x55d398326f99059fF775485246999027B3197955" as `0x${string}`;
 
 describe("bridgeCrossChain (via executePRA)", () => {
-  beforeEach(() => {
-    resetCalls();
-    mockPositions.length = 0;
-    burnResult = {
-      success: true,
-      amount0: 500_000000n,
-      amount1: 500_000000n,
-      hash: "0xburn" as `0x${string}`,
-      gasUsed: 150000n,
-      gasPrice: 1000000000n,
-    };
-    mintResult = {
-      position: makePosition(),
-      txHash: "0xmint" as `0x${string}`,
-      gasUsed: 200000n,
-      gasPrice: 1000000000n,
-    };
-    mockBalance0 = 1000_000000n;
-    mockBalance1 = 1000_000000n;
-    mockBalanceMap = null;
-  });
+  beforeEach(resetMocks);
 
   test("bridges funds when allocations span multiple chains", async () => {
     // All balance on chain 1, none on chain 56

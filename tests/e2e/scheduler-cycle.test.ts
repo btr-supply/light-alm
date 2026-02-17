@@ -7,7 +7,6 @@ import { describe, expect, test, beforeEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { randomBytes } from "crypto";
 
-import type { Forces } from "../../src/types";
 import { computeForces } from "../../src/strategy/forces";
 import { computeRange } from "../../src/strategy/range";
 import {
@@ -43,12 +42,7 @@ describe("E2E: scheduler cycle integration", () => {
       saveCandles(db, candles);
 
       // Compute forces from candles
-      const m1Forces = computeForces(candles);
-      const forces: Forces = {
-        v: m1Forces.volatility,
-        m: m1Forces.momentum,
-        t: m1Forces.trend,
-      };
+      const forces = computeForces(candles);
 
       // Expect low volatility force (stable price)
       expect(forces.v.force).toBeLessThan(10);
@@ -120,7 +114,7 @@ describe("E2E: scheduler cycle integration", () => {
       }
 
       const yields = getRecentYields(db, 24);
-      const rsTimestamps = getRecentRsTimestamps(db, now - 4 * 3600_000);
+      const rsTimestamps = getRecentRsTimestamps(db, now - 5 * 3600_000);
       const txCount = getTrailingTxCount(db, now - 24 * 3600_000);
 
       expect(yields).toHaveLength(5);
@@ -160,20 +154,17 @@ describe("E2E: scheduler cycle integration", () => {
 
   describe("Phase 3: state persistence round-trip", () => {
     test("optimizer state persists and loads", () => {
-      const state = {
-        vec: [0.001, 0.05, -1.0, 300, 0.15],
-        fitness: 0.85,
-        updated_at: Date.now(),
-      };
+      const vec = [0.001, 0.05, -1.0, 300, 0.15];
+      const fitness = 0.85;
 
-      saveOptimizerState(db, TEST_PAIR, state);
+      saveOptimizerState(db, TEST_PAIR, vec, fitness);
 
       // Verify via DB query
       const row = db
         .query("SELECT vec, fitness, updated_at FROM optimizer_state WHERE pair_id = ?")
-        .get(TEST_PAIR);
+        .get(TEST_PAIR) as { vec: string; fitness: number; updated_at: number };
       expect(row).toBeDefined();
-      expect(JSON.parse(row.vec)).toEqual(state.vec);
+      expect(JSON.parse(row.vec)).toEqual(vec);
       expect(row.fitness).toBeCloseTo(0.85);
     });
 

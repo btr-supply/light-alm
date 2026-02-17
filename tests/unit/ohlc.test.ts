@@ -1,6 +1,6 @@
 import { describe, expect, test, beforeAll, beforeEach } from "bun:test";
 import { Database } from "bun:sqlite";
-import { initPairStore, saveCandles, getLatestCandleTs, getCandles } from "../../src/data/store";
+import { initPairStore, saveCandles, getLatestCandleTs } from "../../src/data/store";
 import { TF_MS, BACKFILL_DAYS } from "../../src/config/params";
 import { mergeWeightedCandles } from "../../src/data/ohlc";
 import type { Candle } from "../../src/types";
@@ -152,56 +152,5 @@ describe("backfill", () => {
     expect(since).toBe(knownTs + TF_MS);
   });
 
-  test("cursor advancement prevents stuck loops", () => {
-    // Simulate the stuck cursor guard: if lastTs + TF_MS <= cursor, break
-    const cursor = 1700000000000;
-    const candles: Candle[] = [{ ts: cursor - TF_MS, o: 1, h: 1, l: 1, c: 1, v: 100 }];
-    const lastTs = candles[candles.length - 1].ts;
-    // lastTs + TF_MS = cursor - TF_MS + TF_MS = cursor, which is <= cursor
-    expect(lastTs + TF_MS).toBeLessThanOrEqual(cursor);
-    // This condition breaks the loop, preventing infinite iteration
-  });
 });
 
-// ---- fetchLatestM1 ----
-// Tests that fetchLatestM1 computes the correct since and saves candles.
-
-describe("fetchLatestM1", () => {
-  let db: Database;
-
-  beforeEach(() => {
-    db = initPairStore("LATEST-TEST", ":memory:");
-  });
-
-  test("uses latestTs from DB when available", () => {
-    const knownTs = 1700000000000;
-    saveCandles(db, [{ ts: knownTs, o: 1, h: 1, l: 1, c: 1, v: 100 }]);
-    const latestTs = getLatestCandleTs(db);
-    expect(latestTs).toBe(knownTs);
-    // fetchLatestM1 uses: latestTs > 0 ? latestTs : Date.now() - TF_MS * 20
-    const since = latestTs > 0 ? latestTs : Date.now() - TF_MS * 20;
-    expect(since).toBe(knownTs);
-  });
-
-  test("falls back to recent window when no candles exist", () => {
-    const latestTs = getLatestCandleTs(db);
-    expect(latestTs).toBe(0);
-    const now = Date.now();
-    const since = latestTs > 0 ? latestTs : now - TF_MS * 20;
-    // Should be approximately 20 minutes ago
-    expect(now - since).toBeCloseTo(TF_MS * 20, -3);
-  });
-
-  test("saves fetched candles to DB", () => {
-    const candles: Candle[] = [
-      { ts: 1700000000000, o: 1.0, h: 1.1, l: 0.9, c: 1.05, v: 100 },
-      { ts: 1700000060000, o: 1.05, h: 1.15, l: 0.95, c: 1.1, v: 200 },
-    ];
-    saveCandles(db, candles);
-
-    const stored = getCandles(db, 1700000000000, 1700000060000);
-    expect(stored).toHaveLength(2);
-    expect(stored[0].ts).toBe(1700000000000);
-    expect(stored[1].c).toBe(1.1);
-  });
-});

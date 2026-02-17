@@ -2,9 +2,15 @@ import { describe, expect, test } from "bun:test";
 import { POOL_REGISTRY } from "../../src/config/pools";
 import { queryPool } from "../../src/adapters/pool-query";
 import { getDexFamily } from "../../src/config/dexs";
-import { resolveToken } from "../../src/config/tokens";
 import { USDC, USDT } from "../../src/config/tokens";
 import { DexFamily, type PoolEntry, type TokenConfig } from "../../src/types";
+
+/** Check if an on-chain address matches a known pair token on the given chain */
+function isKnownPairToken(addr: `0x${string}` | undefined, chain: number): boolean {
+  if (!addr) return false;
+  const lower = addr.toLowerCase();
+  return [USDC, USDT].some((t) => t.addresses[chain]?.toLowerCase() === lower);
+}
 
 const pools = POOL_REGISTRY["USDC-USDT"];
 const pairTokens: [TokenConfig, TokenConfig] = [USDC, USDT];
@@ -60,10 +66,8 @@ for (const [family, entries] of byFamily) {
 
         // V3/algebra/aerodrome: verify token0/token1 are known USDC/USDT variants
         if (family !== DexFamily.V4 && family !== DexFamily.PCS_V4) {
-          const t0 = resolveToken(state.token0, entry.chain);
-          const t1 = resolveToken(state.token1, entry.chain);
-          expect(t0).not.toBeNull();
-          expect(t1).not.toBeNull();
+          expect(isKnownPairToken(state.token0, entry.chain)).toBe(true);
+          expect(isKnownPairToken(state.token1, entry.chain)).toBe(true);
         }
       }, 30_000);
     }
