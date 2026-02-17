@@ -81,22 +81,27 @@ describe("tforce", () => {
 });
 
 describe("computeForces", () => {
-  test("returns all three forces", () => {
+  test("returns all three forces in valid range", () => {
     const candles = synthFromCloses(Array.from({ length: 50 }, (_, i) => 100 + Math.sin(i / 5)));
     const f = computeForces(candles);
     expect(f.v.force).toBeGreaterThanOrEqual(0);
+    expect(f.v.force).toBeLessThanOrEqual(100);
     expect(f.m.force).toBeGreaterThanOrEqual(0);
+    expect(f.m.force).toBeLessThanOrEqual(100);
     expect(f.t.force).toBeGreaterThanOrEqual(0);
+    expect(f.t.force).toBeLessThanOrEqual(100);
   });
 });
 
 describe("compositeForces", () => {
   test("produces blended forces from M1 candles (3-frame MTF: M15, H1, H4)", () => {
     // 1500 M1 candles = 25 hours (covers M15, H1, H4)
+    // Steady uptrend: momentum and trend should be above neutral (50)
     const candles = synthFromCloses(Array.from({ length: 1500 }, (_, i) => 100 + i * 0.01));
     const f = compositeForces(candles);
     expect(f.v.force).toBeGreaterThanOrEqual(0);
-    expect(f.m.force).toBeGreaterThanOrEqual(0);
-    expect(f.t.force).toBeGreaterThanOrEqual(0);
+    expect(f.v.force).toBeLessThanOrEqual(100);
+    expect(f.m.force).toBeGreaterThan(50); // uptrend → above-neutral momentum
+    expect(f.t.force).toBeGreaterThan(50); // uptrend → above-neutral trend
   });
 });

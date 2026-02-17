@@ -1,0 +1,14 @@
+.git
+node_modules
+.data
+*.db
+*.db-wal
+*.db-shm
+tests
+docs
+.env
+CLAUDE.md
+AUDIT.md
+CONTRIBUTING.md
+*.md
+!shared/**

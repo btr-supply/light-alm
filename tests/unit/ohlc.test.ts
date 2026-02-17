@@ -1,6 +1,4 @@
 import { describe, expect, test, beforeAll, beforeEach } from "bun:test";
-import { Database } from "bun:sqlite";
-import { initPairStore, saveCandles, getLatestCandleTs } from "../../src/data/store";
 import { TF_MS, BACKFILL_DAYS } from "../../src/config/params";
 import { mergeWeightedCandles } from "../../src/data/ohlc";
 import type { Candle } from "../../src/types";
@@ -110,31 +108,33 @@ describe("fetchWeightedCandles (logic)", () => {
 });
 
 // ---- backfill ----
-// Tests pagination logic and cursor advancement.
+// Tests cursor advancement logic using a mock DragonflyStore.
+
+/** In-memory mock of DragonflyStore for candle cursor tests. */
+function mockStore() {
+  let candleCursor = 0;
+  return {
+    getLatestCandleTs: async () => candleCursor,
+    setLatestCandleTs: async (ts: number) => { candleCursor = ts; },
+  };
+}
 
 describe("backfill", () => {
-  let db: Database;
-
-  beforeEach(() => {
-    db = initPairStore("BACKFILL-TEST", ":memory:");
-  });
-
   test("skips when candles are up to date", async () => {
-    // Insert a candle very close to now
+    const store = mockStore();
     const now = Date.now();
-    saveCandles(db, [{ ts: now - TF_MS + 1000, o: 1, h: 1, l: 1, c: 1, v: 100 }]);
+    await store.setLatestCandleTs(now - TF_MS + 1000);
 
-    // We can't easily mock fetchWeightedCandles since it's private,
-    // but we can verify getLatestCandleTs returns a recent value.
-    const latestTs = getLatestCandleTs(db);
+    const latestTs = await store.getLatestCandleTs();
     expect(latestTs).toBeGreaterThan(0);
     // since = latestTs + TF_MS which should be >= now - TF_MS, so backfill skips
     const since = latestTs + TF_MS;
     expect(since).toBeGreaterThanOrEqual(now - TF_MS);
   });
 
-  test("computes correct since from empty DB", () => {
-    const latestTs = getLatestCandleTs(db);
+  test("computes correct since from empty store", async () => {
+    const store = mockStore();
+    const latestTs = await store.getLatestCandleTs();
     expect(latestTs).toBe(0);
     const now = Date.now();
     const since = latestTs > 0 ? latestTs + TF_MS : now - BACKFILL_DAYS * 24 * 60 * 60 * 1000;
@@ -143,14 +143,13 @@ describe("backfill", () => {
     expect(Math.abs(since - expectedSince)).toBeLessThan(100);
   });
 
-  test("computes correct since from existing candles", () => {
+  test("computes correct since from existing cursor", async () => {
+    const store = mockStore();
     const knownTs = 1700000000000;
-    saveCandles(db, [{ ts: knownTs, o: 1, h: 1.1, l: 0.9, c: 1, v: 100 }]);
-    const latestTs = getLatestCandleTs(db);
+    await store.setLatestCandleTs(knownTs);
+    const latestTs = await store.getLatestCandleTs();
     expect(latestTs).toBe(knownTs);
     const since = latestTs + TF_MS;
     expect(since).toBe(knownTs + TF_MS);
   });
-
 });
-

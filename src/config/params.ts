@@ -27,6 +27,10 @@ export const VFORCE_SIGMOID_SCALE = 60;
 // ---- Decision ----
 
 export const MIN_HOLD_MS = 12 * 3600_000; // 12h minimum holding period
+export const DEFAULT_PRA_THRESHOLD = 0.05; // 5% APR improvement to trigger PRA
+export const DEFAULT_RS_THRESHOLD = 0.25; // 25% range divergence to trigger RS
+export const DEFAULT_INTERVAL_SEC = 900; // 15 min cycle interval
+export const DEFAULT_MAX_POSITIONS = 3;
 
 // ---- Optimizer (Nelder-Mead) ----
 
@@ -73,7 +77,6 @@ export const REGIME_MIN_HOURLY_SAMPLES = 10;
 export const KS_RS_WINDOW_MS = 4 * 3600_000; // 4h trailing window
 export const KS_MAX_RS_COUNT = 8;
 export const KS_PATHOLOGICAL_MIN = 0.001;
-export const KS_PATHOLOGICAL_MAX = 0.002;
 export const KS_GAS_BUDGET_PCT = 0.05; // 5% of position value
 
 // ---- Allocation (Water-Fill) ----
@@ -85,7 +88,6 @@ export const ALLOC_MIN_PCT = 0.001;
 
 // ---- Execution Cost Estimates ----
 
-export { GAS_COST_USD } from "../../shared/format";
 export const POSITION_VALUE_USD = 10_000;
 export const IMBALANCE_THRESHOLD = 0.05;
 
@@ -117,11 +119,10 @@ export const OHLC_LATEST_LOOKBACK_CANDLES = 20;
 export const GECKO_API_BASE = "https://api.geckoterminal.com/api/v2";
 export const GECKO_RATE_LIMIT_MS = 2000;
 
-// ---- Store / Epochs ----
+// ---- Epochs ----
 
 export const EPOCHS_PER_DAY = 96;
 export const EPOCHS_PER_YEAR = 365.25 * EPOCHS_PER_DAY;
-export const DB_DIR = ".data";
 
 // ---- TX Execution ----
 
@@ -201,8 +202,6 @@ export const DEFAULT_TXLOG_LIMIT = 50;
 
 // ---- Infrastructure ----
 
-export const DATA_RETENTION_DAYS = 90;
-
 export const DEFAULT_REDIS_URL = "redis://localhost:6379";
 export const O2_FLUSH_INTERVAL_MS = 5000;
 export const O2_BUFFER_SIZE = 100;
@@ -214,6 +213,8 @@ export const FETCH_TIMEOUT_MS = 30_000;
 
 export const DEFAULT_RETRY_COUNT = 3;
 export const DEFAULT_RETRY_BACKOFF_MS = 2000;
+export const BURN_RETRY_COUNT = 1;
+export const BURN_RETRY_BACKOFF_MS = 3000;
 export const MINT_RETRY_COUNT = 1;
 export const MINT_RETRY_BACKOFF_MS = 5000;
 

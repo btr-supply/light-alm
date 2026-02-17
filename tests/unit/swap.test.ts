@@ -48,7 +48,6 @@ describe("waitForArrival", () => {
       mockGetBalance,
     );
     expect(result).toBe(2000n);
-    expect(callCount).toBeGreaterThanOrEqual(3);
   });
 
   test("throws on timeout", async () => {

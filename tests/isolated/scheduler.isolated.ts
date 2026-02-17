@@ -76,7 +76,7 @@ describe("cycle", () => {
     pool: poolAddr,
     chain: 1,
     ts: Date.now(),
-    volume24h: 100_000,
+    volume24h: 500_000,
     tvl: 5_000_000,
     feePct: 0.0005,
     basePriceUsd: 1.0,

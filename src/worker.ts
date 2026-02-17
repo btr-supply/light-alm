@@ -1,9 +1,9 @@
-import { initPairStore, getLatestPairAllocation, pruneOldData } from "./data/store";
+import { DragonflyStore } from "./data/store-dragonfly";
 import { startPairLoop, stopAllLoops } from "./scheduler";
 import { registerPair, getPair, toWorkerState } from "./state";
 import { WORKER_LOCK_TTL, WORKER_HEARTBEAT_INTERVAL, WORKER_HEARTBEAT_TTL } from "./config/params";
 import { log, isValidLogLevel, errMsg } from "./utils";
-import { loadPairConfigs } from "./config/pairs";
+import { configEntryToPair, loadPairConfigs } from "./config/pairs";
 import {
   createRedis,
   KEYS,
@@ -12,6 +12,7 @@ import {
   refreshLock,
   releaseLock,
   setWorkerState,
+  getConfigPair,
 } from "./infra/redis";
 
 const _pairId = process.argv[2] || process.env.WORKER_PAIR_ID;
@@ -31,16 +32,19 @@ const startTs = Date.now();
 const lockValue = `${process.pid}:${startTs}`;
 
 async function main() {
-  // Load pair config
-  const pairs = loadPairConfigs();
-  const pair = pairs.find((p) => p.id === pairId);
+  // Connect to DragonflyDB first — config lives here
+  const redis = createRedis();
+
+  // Load pair config from DragonflyDB (source of truth), fallback to env
+  const configEntry = await getConfigPair(redis, pairId);
+  const pair = configEntry
+    ? configEntryToPair(configEntry)
+    : loadPairConfigs().find((p) => p.id === pairId) ?? null;
   if (!pair) {
-    log.error(`Pair ${pairId} not found in config`);
+    log.error(`Pair ${pairId} not found in DragonflyDB or env config`);
+    redis.close();
     process.exit(1);
   }
-
-  // Connect to DragonflyDB
-  const redis = createRedis();
 
   // Acquire worker lock
   const lockKey = KEYS.workerLock(pairId);
@@ -52,9 +56,8 @@ async function main() {
   }
   log.info(`Worker ${pairId} acquired lock (pid=${process.pid})`, { pairId });
 
-  // Open SQLite + prune stale data
-  const db = initPairStore(pairId);
-  pruneOldData(db);
+  // Create DragonflyDB store for this pair
+  const store = new DragonflyStore(redis, pairId);
   const pk = (process.env[pair.eoaEnvVar] as `0x${string}` | undefined) ?? null;
 
   if (!pk) {
@@ -62,7 +65,7 @@ async function main() {
   }
 
   // Register in local state (for scheduler access)
-  registerPair(pairId, db, pair);
+  registerPair(pairId, store, pair);
 
   // Graceful shutdown (defined early so heartbeat can trigger it)
   let shutdownCalled = false;
@@ -86,11 +89,6 @@ async function main() {
       // Best-effort cleanup
     }
 
-    try {
-      db.close();
-    } catch {
-      /* WAL safe */
-    }
     await log.shutdown();
 
     try {
@@ -116,14 +114,10 @@ async function main() {
         shutdown();
         return;
       }
-      // Publish current state
+      // Publish current state (APR cached in PairRuntime by scheduler)
       const rt = getPair(pairId);
       if (rt) {
-        const alloc = getLatestPairAllocation(rt.db);
-        const state = toWorkerState(pairId, rt, process.pid, startTs, {
-          current: alloc?.currentApr ?? 0,
-          optimal: alloc?.optimalApr ?? 0,
-        });
+        const state = toWorkerState(pairId, rt, process.pid, startTs);
         await setWorkerState(redis, pairId, state);
       }
     } catch (e) {
@@ -167,7 +161,7 @@ async function main() {
   await connectSubscriber();
 
   // Start the scheduler loop
-  startPairLoop(db, pair, pk);
+  startPairLoop(store, pair, pk);
   log.info(`Worker ${pairId} started (pid=${process.pid})`, { pairId });
 }
 

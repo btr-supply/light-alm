@@ -1,4 +1,4 @@
-import { initPairStore, getPositions } from "./data/store";
+import { DragonflyStore } from "./data/store-dragonfly";
 import { runSingleCycle } from "./scheduler";
 import { registerPair } from "./state";
 import { log, isValidLogLevel, pct, errMsg } from "./utils";
@@ -67,7 +67,7 @@ Environment:
     return;
   }
 
-  // ---- status: read from DragonflyDB with SQLite fallback ----
+  // ---- status: read from DragonflyDB ----
   if (command === "status") {
     const pairs = loadPairConfigs();
     if (!pairs.length) {
@@ -76,42 +76,37 @@ Environment:
       return;
     }
 
-    // Try DragonflyDB first
-    let usedRedis = false;
+    const redis = createRedis();
     try {
-      const redis = createRedis();
       const pairIds = await redis.smembers(KEYS.workers);
       if (pairIds.length) {
-        usedRedis = true;
         for (const id of pairIds) {
           const state = await getWorkerState(redis, id);
           const hb = await redis.get(KEYS.workerHeartbeat(id));
+          const store = new DragonflyStore(redis, id);
+          const positions = await store.getPositions();
           console.log(
             `\n${id}: ${state?.status ?? "unknown"} (epoch=${state?.epoch ?? 0}, pid=${state?.pid ?? "?"})`,
           );
           console.log(
-            `  decision=${state?.lastDecision ?? "?"} apr=${pct(state?.currentApr ?? 0)} alive=${!!hb}`,
+            `  decision=${state?.lastDecision ?? "?"} apr=${pct(state?.currentApr ?? 0)} alive=${!!hb} positions=${positions.length}`,
           );
         }
+      } else {
+        // No workers registered — show configured pairs with DragonflyDB positions
+        for (const pair of pairs) {
+          const store = new DragonflyStore(redis, pair.id);
+          const positions = await store.getPositions();
+          console.log(`\n${pair.id}: ${positions.length} position(s)`);
+          for (const p of positions) {
+            console.log(
+              `  ${p.pool.slice(0, 10)}... chain=${p.chain} ticks=[${p.tickLower},${p.tickUpper}] apr=${pct(p.entryApr)}`,
+            );
+          }
+        }
       }
+    } finally {
       redis.close();
-    } catch {
-      // DragonflyDB not available — fall back to SQLite
-    }
-
-    if (!usedRedis) {
-      // SQLite fallback
-      for (const pair of pairs) {
-        const db = initPairStore(pair.id);
-        const positions = getPositions(db);
-        console.log(`\n${pair.id}: ${positions.length} position(s)`);
-        for (const p of positions) {
-          console.log(
-            `  ${p.pool.slice(0, 10)}... chain=${p.chain} ticks=[${p.tickLower},${p.tickUpper}] apr=${pct(p.entryApr)}`,
-          );
-        }
-        db.close();
-      }
     }
     await log.shutdown();
     return;
@@ -126,25 +121,30 @@ Environment:
       return;
     }
 
-    for (const pair of pairs) {
-      const db = initPairStore(pair.id);
-      const pk = (process.env[pair.eoaEnvVar] as `0x${string}` | undefined) ?? null;
-      registerPair(pair.id, db, pair);
+    const redis = createRedis();
+    try {
+      for (const pair of pairs) {
+        const store = new DragonflyStore(redis, pair.id);
+        const pk = (process.env[pair.eoaEnvVar] as `0x${string}` | undefined) ?? null;
+        registerPair(pair.id, store, pair);
 
-      if (!pk) {
-        log.warn(
-          `No private key for ${pair.id} (set ${pair.eoaEnvVar}), running in read-only mode`,
-        );
+        if (!pk) {
+          log.warn(
+            `No private key for ${pair.id} (set ${pair.eoaEnvVar}), running in read-only mode`,
+          );
+        }
+
+        const decision = await runSingleCycle(store, pair, pk);
+        console.log(`${pair.id}: ${decision.type}`, {
+          currentApr: pct(decision.currentApr),
+          optimalApr: pct(decision.optimalApr),
+          improvement: pct(decision.improvement),
+          allocations: decision.targetAllocations.length,
+          rangeShifts: decision.rangeShifts?.length ?? 0,
+        });
       }
-
-      const decision = await runSingleCycle(db, pair, pk);
-      console.log(`${pair.id}: ${decision.type}`, {
-        currentApr: pct(decision.currentApr),
-        optimalApr: pct(decision.optimalApr),
-        improvement: pct(decision.improvement),
-        allocations: decision.targetAllocations.length,
-        rangeShifts: decision.rangeShifts?.length ?? 0,
-      });
+    } finally {
+      redis.close();
     }
     await log.shutdown();
     return;

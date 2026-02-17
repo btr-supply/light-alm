@@ -1,5 +1,5 @@
 import { encodeAbiParameters, encodeFunctionData, concat, toHex, keccak256 } from "viem";
-import type { Database } from "bun:sqlite";
+import type { DragonflyStore } from "../data/store-dragonfly";
 import type {
   AllocationEntry,
   PairConfig,
@@ -23,8 +23,8 @@ import {
   applySlippage,
   extractTokenIdFromLogs,
   buildAndSaveMintResult,
-  failedMintResult,
-  failedBurnResult,
+  checkMintRevert,
+  checkBurnRevert,
   successBurnResult,
 } from "./positions";
 import { log, sortTokens, sortTokensWithAmounts } from "../utils";
@@ -275,7 +275,7 @@ function encodeBurnActions(
 // ---- Mint ----
 
 export async function mintV4Position(
-  db: Database,
+  store: DragonflyStore,
   pair: PairConfig,
   allocation: AllocationEntry,
   range: Range,
@@ -355,29 +355,14 @@ export async function mintV4Position(
   });
 
   const result = await sendAndWait(pool.chain, privateKey, { to: pm, data });
-  if (result.status === "reverted") {
-    log.error(`V4 mint reverted: ${result.hash}`);
-    return failedMintResult(result);
-  }
+  const reverted = checkMintRevert("V4 mint", result);
+  if (reverted) return reverted;
 
   const tokenId = extractTokenIdFromLogs(result.logs ?? []);
 
-  // Save with original pair-order amounts (not sorted)
-  return buildAndSaveMintResult(
-    db,
-    pool,
-    pair,
-    allocation,
-    range,
-    {
-      positionId: tokenId || `pending:${result.hash}`,
-      tickLower,
-      tickUpper,
-      liquidity,
-      amount0,
-      amount1,
-    },
-    { hash: result.hash, gasUsed: result.gasUsed, gasPrice: result.gasPrice },
+  return buildAndSaveMintResult(store, pool, pair, allocation, range,
+    { positionId: tokenId || `pending:${result.hash}`, tickLower, tickUpper, liquidity, amount0, amount1 },
+    result,
   );
 }
 
@@ -420,17 +405,9 @@ export async function burnV4Position(
   });
 
   const result = await sendAndWait(position.chain, privateKey, { to: pm, data });
-  if (result.status === "reverted") {
-    log.error(`V4 burn reverted: ${result.hash}`);
-    return failedBurnResult(result);
-  }
+  const reverted = checkBurnRevert("V4 burn", result);
+  if (reverted) return reverted;
 
   log.info(`V4 position burned: ${position.id}`);
-  return successBurnResult(
-    position.amount0,
-    position.amount1,
-    result.hash,
-    result.gasUsed,
-    result.gasPrice,
-  );
+  return successBurnResult(position.amount0, position.amount1, result);
 }

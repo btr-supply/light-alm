@@ -252,3 +252,14 @@ Polls `balanceOf` and returns when `bal > balanceBefore`. If two deposits arrive
 - **L-4** — O2 token Base64 format validation (warn-only)
 - Constants: `DATA_RETENTION_DAYS` added to `params.ts`
 - 206 tests pass, 0 fail, 0 type errors
+
+### Phase 19: Cross-Validated Audit Fixes — DONE
+- **Dead code**: Removed `_totalLvrFrac` accumulation from `optimizer.ts` (accumulated but never read); removed `KS_PATHOLOGICAL_MAX` unused constant from `params.ts`
+- **Config consolidation**: `DEFAULT_PRA_THRESHOLD`, `DEFAULT_RS_THRESHOLD`, `DEFAULT_INTERVAL_SEC`, `DEFAULT_MAX_POSITIONS` centralized in `params.ts`; `pairs.ts` imports from params (was hardcoded). Bounds validation added for PRA/RS thresholds (reject NaN, <=0, >=1)
+- **Gas-cost gating**: `DecideOpts` interface added to `decide()` with `gasCostUsd` + `positionValueUsd`; PRA gate: expected gain over 7d must exceed 1.5x gas; RS gate: estimated fee loss must exceed 2x gas per position. `MIN_ABSOLUTE_APR_GAIN` (0.5%) prevents noise triggers when currentApr=0
+- **Regime suppression HOLD**: `scheduler.ts` forces HOLD when `regime.suppressed` (was only suppressing optimizer, decisions still ran on stale params)
+- **Regime widenFactor scope**: Applied to RS threshold (`Math.min(rsThreshold * widenFactor, 0.9)`) and PRA threshold (`Math.min(pra * widenFactor * 2, 0.9)`), not just range width
+- **Optimizer resilience**: Wrapped optimizer in try-catch with defaults fallback; partial snapshot threshold (require >= 50% of pools)
+- **Burn retry**: `BURN_RETRY_COUNT`/`BURN_RETRY_BACKOFF_MS` constants; `retry()` wraps `burnPosition` in both PRA and RS flows
+- **Test cleanup**: Removed 10 `Array.isArray` tautologies from `api.test.ts`; replaced standalone checks with `toHaveLength()` assertions. Added `makePosition`/`makeAllocation`/`makeSnapshot` fixture factories to `tests/helpers.ts`. Fixed scheduler.isolated.ts snapshot volume to align with gas-cost gate
+- 282 tests pass, 0 fail, 0 type errors

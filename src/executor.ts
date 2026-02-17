@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import type {
   PairConfig,
   AllocationEntry,
@@ -10,7 +9,7 @@ import type {
   BurnResult,
   MintResult,
 } from "./types";
-import { getPositions, getCandles, logTx, deletePosition } from "./data/store";
+import type { DragonflyStore } from "./data/store-dragonfly";
 import { burnPosition, mintPosition } from "./execution/positions";
 import { getBalance, swapTokens, waitForArrival } from "./execution/swap";
 import { computeRange } from "./strategy/range";
@@ -18,12 +17,13 @@ import { getAccount } from "./execution/tx";
 import { tokenDecimals } from "./config/tokens";
 import {
   IMBALANCE_THRESHOLD,
-  BACKFILL_MS,
   BRIDGE_THRESHOLD,
   FALLBACK_RANGE_MIN_FACTOR,
   FALLBACK_RANGE_MAX_FACTOR,
   FALLBACK_RANGE_BREADTH,
   FALLBACK_RANGE_CONFIDENCE,
+  BURN_RETRY_COUNT,
+  BURN_RETRY_BACKOFF_MS,
   MINT_RETRY_COUNT,
   MINT_RETRY_BACKOFF_MS,
 } from "./config/params";
@@ -96,18 +96,21 @@ async function bridgeCrossChain(
 
   const chainBalances = new Map<number, number>();
   let totalBalance = 0;
-  for (const chain of chains) {
-    const token0Addr = pair.token0.addresses[chain];
-    const token1Addr = pair.token1.addresses[chain];
-    let val = 0;
-    if (token0Addr) {
-      const bal = await getBalance(chain, token0Addr, account);
-      val += Number(bal) / 10 ** tokenDecimals(pair.token0, chain);
-    }
-    if (token1Addr) {
-      const bal = await getBalance(chain, token1Addr, account);
-      val += Number(bal) / 10 ** tokenDecimals(pair.token1, chain);
-    }
+  const balEntries = await Promise.all(
+    chains.map(async (chain) => {
+      const token0Addr = pair.token0.addresses[chain];
+      const token1Addr = pair.token1.addresses[chain];
+      const [bal0, bal1] = await Promise.all([
+        token0Addr ? getBalance(chain, token0Addr, account) : 0n,
+        token1Addr ? getBalance(chain, token1Addr, account) : 0n,
+      ]);
+      let val = 0;
+      if (token0Addr) val += Number(bal0) / 10 ** tokenDecimals(pair.token0, chain);
+      if (token1Addr) val += Number(bal1) / 10 ** tokenDecimals(pair.token1, chain);
+      return [chain, val] as const;
+    }),
+  );
+  for (const [chain, val] of balEntries) {
     chainBalances.set(chain, val);
     totalBalance += val;
   }
@@ -173,26 +176,24 @@ async function captureChainBalances(
   chains: number[],
   account: `0x${string}`,
 ): Promise<Map<number, { bal0: bigint; bal1: bigint }>> {
-  const result = new Map<number, { bal0: bigint; bal1: bigint }>();
-  for (const chain of chains) {
-    const t0 = pair.token0.addresses[chain];
-    const t1 = pair.token1.addresses[chain];
-    const bal0 = t0 ? await getBalance(chain, t0, account) : 0n;
-    const bal1 = t1 ? await getBalance(chain, t1, account) : 0n;
-    result.set(chain, { bal0, bal1 });
-  }
-  return result;
+  const entries = await Promise.all(
+    chains.map(async (chain) => {
+      const t0 = pair.token0.addresses[chain];
+      const t1 = pair.token1.addresses[chain];
+      const [bal0, bal1] = await Promise.all([
+        t0 ? getBalance(chain, t0, account) : 0n,
+        t1 ? getBalance(chain, t1, account) : 0n,
+      ]);
+      return [chain, { bal0, bal1 }] as const;
+    }),
+  );
+  return new Map(entries);
 }
 
 const SCALE_PRECISION = 1_000_000_000n; // 1e9 for sub-basis-point precision
 
 function scaleByPct(balance: bigint, pct: number): bigint {
   return (balance * BigInt(Math.round(pct * Number(SCALE_PRECISION)))) / SCALE_PRECISION;
-}
-
-function getLatestPrice(db: Database, now: number): number {
-  const candles = getCandles(db, now - BACKFILL_MS, now);
-  return candles.length ? candles[candles.length - 1].c : 1;
 }
 
 const TX_DEFAULTS: {
@@ -218,6 +219,7 @@ const TX_DEFAULTS: {
 };
 
 type TxOpts = {
+  pairId: string;
   decisionType: DecisionType;
   opType: TxLogEntry["opType"];
   pool: `0x${string}`;
@@ -227,25 +229,25 @@ type TxOpts = {
   gasUsed: bigint;
 } & Partial<typeof TX_DEFAULTS>;
 
-function logTransaction(db: Database, opts: TxOpts) {
+function logTransaction(opts: TxOpts) {
   const o = { ...TX_DEFAULTS, ...opts };
   const entry = {
     ...o,
     ts: Date.now(),
     allocationErrorPct: Math.abs(o.targetAllocationPct - o.actualAllocationPct),
   };
-  logTx(db, entry);
   ingestToO2("tx_log", [entry]);
 }
 
 function logBurn(
-  db: Database,
+  pairId: string,
   dt: DecisionType,
   r: BurnResult,
   pool: `0x${string}`,
   chain: number,
 ) {
-  logTransaction(db, {
+  logTransaction({
+    pairId,
     decisionType: dt,
     opType: "burn",
     pool,
@@ -257,8 +259,9 @@ function logBurn(
   });
 }
 
-function logMint(db: Database, dt: DecisionType, r: MintResult, a: AllocationEntry) {
-  logTransaction(db, {
+function logMint(pairId: string, dt: DecisionType, r: MintResult, a: AllocationEntry) {
+  logTransaction({
+    pairId,
     decisionType: dt,
     opType: "mint",
     pool: a.pool,
@@ -272,13 +275,14 @@ function logMint(db: Database, dt: DecisionType, r: MintResult, a: AllocationEnt
 }
 
 async function mintFromAllocations(
-  db: Database,
+  store: DragonflyStore,
   pair: PairConfig,
   dt: DecisionType,
   privateKey: `0x${string}`,
   items: { alloc: AllocationEntry; range: Range }[],
   chainBals: Map<number, { bal0: bigint; bal1: bigint }>,
-) {
+): Promise<number> {
+  let txCount = 0;
   for (const { alloc, range } of items) {
     if (!pair.pools.find((p) => p.address === alloc.pool && p.chain === alloc.chain)) continue;
     const bals = chainBals.get(alloc.chain);
@@ -294,11 +298,12 @@ async function mintFromAllocations(
     }
     try {
       const r = await retry(
-        () => mintPosition(db, pair, alloc, range, amt0, amt1, privateKey),
+        () => mintPosition(store, pair, alloc, range, amt0, amt1, privateKey),
         MINT_RETRY_COUNT,
         MINT_RETRY_BACKOFF_MS,
       );
-      logMint(db, dt, r, alloc);
+      logMint(pair.id, dt, r, alloc);
+      txCount++;
     } catch (e: unknown) {
       log.error(`Mint failed for ${alloc.pool} on chain ${alloc.chain}: ${errMsg(e)}`, {
         pairId: pair.id,
@@ -307,6 +312,7 @@ async function mintFromAllocations(
       });
     }
   }
+  return txCount;
 }
 
 /**
@@ -316,31 +322,43 @@ async function mintFromAllocations(
  * 3. Mint new positions per allocation (log each)
  */
 export async function executePRA(
-  db: Database,
+  store: DragonflyStore,
   pair: PairConfig,
   allocations: AllocationEntry[],
   decisionType: DecisionType,
   privateKey: `0x${string}`,
   forces: Forces | null = null,
-) {
+  price = 1,
+): Promise<number> {
   log.info(`Executing PRA for ${pair.id}: ${allocations.length} allocation(s)`, {
     pairId: pair.id,
   });
   const account = getAccount(privateKey);
+  let txCount = 0;
 
   // 1. Burn existing positions — abort on failure
-  const existing = getPositions(db);
+  const existing = await store.getPositions();
   for (const pos of existing) {
-    const result = await burnPosition(pos, privateKey, pair);
-    if (result) logBurn(db, decisionType, result, pos.pool, pos.chain);
+    let result: BurnResult | null = null;
+    try {
+      result = await retry(
+        () => burnPosition(pos, privateKey, pair),
+        BURN_RETRY_COUNT,
+        BURN_RETRY_BACKOFF_MS,
+      );
+    } catch (e: unknown) {
+      log.error(`PRA aborted: burn threw for position ${pos.id}: ${errMsg(e)}`);
+      return txCount;
+    }
+    if (result) { logBurn(pair.id, decisionType, result, pos.pool, pos.chain); txCount++; }
     if (result?.success) {
-      deletePosition(db, pos.id);
+      await store.deletePosition(pos.id);
       ingestToO2("positions", [
         { event: "burn", pairId: pair.id, positionId: pos.id, pool: pos.pool, chain: pos.chain },
       ]);
     } else {
       log.error(`PRA aborted: burn failed for position ${pos.id}`);
-      return;
+      return txCount;
     }
   }
 
@@ -354,9 +372,6 @@ export async function executePRA(
   }
 
   // 4. Get current range from force model
-  const now = Date.now();
-  const price = getLatestPrice(db, now);
-
   const range = forces
     ? computeRange(price, forces)
     : {
@@ -371,14 +386,15 @@ export async function executePRA(
 
   // 5. Snapshot per-chain balances upfront, then mint per allocation
   const chainBals = await captureChainBalances(pair, targetChains, account.address);
-  await mintFromAllocations(
-    db,
+  txCount += await mintFromAllocations(
+    store,
     pair,
     decisionType,
     privateKey,
     allocations.map((a) => ({ alloc: a, range })),
     chainBals,
   );
+  return txCount;
 }
 
 /**
@@ -388,15 +404,16 @@ export async function executePRA(
  * 3. Mint new positions at optimal range (log each, with retry)
  */
 export async function executeRS(
-  db: Database,
+  store: DragonflyStore,
   pair: PairConfig,
   shifts: { pool: `0x${string}`; chain: number; oldRange: Range; newRange: Range }[],
   decisionType: DecisionType,
   privateKey: `0x${string}`,
-) {
+): Promise<number> {
   log.info(`Executing RS for ${pair.id}: ${shifts.length} shift(s)`, { pairId: pair.id });
   const account = getAccount(privateKey);
-  const existing = getPositions(db);
+  const existing = await store.getPositions();
+  let txCount = 0;
 
   // M4: Compute proportional allocation based on entryValueUsd
   const matchedPositions = shifts
@@ -409,10 +426,24 @@ export async function executeRS(
   // Burn all positions first, then mint all — avoids balance depletion between sequential burn+mint
   const burned: typeof matchedPositions = [];
   for (const m of matchedPositions) {
-    const burnResult = await burnPosition(m.position, privateKey, pair);
-    if (burnResult) logBurn(db, decisionType, burnResult, m.shift.pool, m.shift.chain);
+    let burnResult: BurnResult | null = null;
+    try {
+      burnResult = await retry(
+        () => burnPosition(m.position, privateKey, pair),
+        BURN_RETRY_COUNT,
+        BURN_RETRY_BACKOFF_MS,
+      );
+    } catch (e: unknown) {
+      log.error(`RS burn threw for position ${m.position.id}: ${errMsg(e)}`, {
+        pairId: pair.id,
+        pool: m.shift.pool,
+        chain: m.shift.chain,
+      });
+      continue;
+    }
+    if (burnResult) { logBurn(pair.id, decisionType, burnResult, m.shift.pool, m.shift.chain); txCount++; }
     if (burnResult?.success) {
-      deletePosition(db, m.position.id);
+      await store.deletePosition(m.position.id);
       ingestToO2("positions", [
         {
           event: "burn",
@@ -453,5 +484,6 @@ export async function executeRS(
       range: shift.newRange,
     };
   });
-  await mintFromAllocations(db, pair, decisionType, privateKey, items, chainBals);
+  txCount += await mintFromAllocations(store, pair, decisionType, privateKey, items, chainBals);
+  return txCount;
 }

@@ -15,7 +15,7 @@ export const shortAddr = (addr: string, front = 6, back = 4) =>
 export const fmtTime = (ts: number) =>
   ts ? new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "-";
 
-const CHAIN_NAME: Record<number, string> = {
+export const CHAIN_NAME: Record<number, string> = {
   1: "Ethereum",
   56: "BSC",
   8453: "Base",

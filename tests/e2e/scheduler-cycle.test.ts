@@ -19,6 +19,8 @@ import {
   getRecentRsTimestamps,
   getTrailingTxCount,
 } from "../../src/data/store";
+import { checkKillSwitches, defaultRangeParams } from "../../src/strategy/optimizer";
+import { POSITION_VALUE_USD } from "../../src/config/params";
 import { synthFromCloses, synthRandomWalk, synthM15 } from "../helpers";
 
 const TEST_PAIR = `E2E-${randomBytes(4).toString("hex")}`;
@@ -113,22 +115,20 @@ describe("E2E: scheduler cycle integration", () => {
         });
       }
 
-      const yields = getRecentYields(db, 24);
+      const trailingYields = getRecentYields(db, 24);
       const rsTimestamps = getRecentRsTimestamps(db, now - 5 * 3600_000);
       const txCount = getTrailingTxCount(db, now - 24 * 3600_000);
 
-      expect(yields).toHaveLength(5);
+      expect(trailingYields).toHaveLength(5);
       expect(rsTimestamps).toHaveLength(2); // 2 RS decisions
       expect(txCount).toBe(0); // No tx logs
 
-      // Kill-switch conditions
-      const tooManyRs = rsTimestamps.length > 8;
-      const lowYield = yields.length > 0 && yields[yields.length - 1] < 0;
-      const highGasCost = txCount * 0.5 > 100; // $100 threshold
-
-      expect(tooManyRs).toBe(false);
-      expect(lowYield).toBe(false);
-      expect(highGasCost).toBe(false);
+      const ks = checkKillSwitches(
+        { trailingYields, rsTimestamps, trailing24hGasUsd: txCount * 0.5 },
+        POSITION_VALUE_USD,
+        defaultRangeParams(),
+      );
+      expect(ks.useDefaults).toBe(false);
     });
 
     test("excessive RS → kill-switch triggers", () => {
@@ -149,6 +149,14 @@ describe("E2E: scheduler cycle integration", () => {
 
       const rsTimestamps = getRecentRsTimestamps(db, now - 4 * 3600_000);
       expect(rsTimestamps.length).toBeGreaterThan(8);
+
+      const ks = checkKillSwitches(
+        { trailingYields: [], rsTimestamps, trailing24hGasUsd: 0 },
+        POSITION_VALUE_USD,
+        defaultRangeParams(),
+      );
+      expect(ks.useDefaults).toBe(true);
+      expect(ks.reason).toBe("excessive_rs");
     });
   });
 

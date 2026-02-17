@@ -1,7 +1,6 @@
-import type { Database } from "bun:sqlite";
 import type { PoolConfig, PoolSnapshot, GeckoPoolData } from "../types";
 import { geckoNetwork } from "../config/chains";
-import { saveSnapshot } from "./store";
+import { ingestToO2 } from "../infra/o2";
 import {
   GECKO_API_BASE,
   GECKO_RATE_LIMIT_MS,
@@ -51,11 +50,11 @@ export async function fetchPool(network: string, address: string): Promise<Gecko
 }
 
 /**
- * Fetch enriched snapshots for all pools of a pair and save to DB.
- * Fetches all pools concurrently (rate limiter serializes as needed).
+ * Fetch enriched snapshots for all pools of a pair.
+ * Snapshots are ingested to O2 for persistence.
  */
 export async function fetchPoolSnapshots(
-  db: Database,
+  pairId: string,
   pools: PoolConfig[],
   now = Date.now(),
 ): Promise<PoolSnapshot[]> {
@@ -68,7 +67,6 @@ export async function fetchPoolSnapshots(
         ts: now,
         ...data,
       };
-      saveSnapshot(db, snapshot);
       return snapshot;
     }),
   );
@@ -83,6 +81,15 @@ export async function fetchPoolSnapshots(
       log.warn(`Gecko fetch failed for ${pools[i].address} on chain ${pools[i].chain}: ${msg}`);
     }
   }
+
+  // Ingest all snapshots to O2
+  if (results.length) {
+    ingestToO2(
+      "pool_snapshots",
+      results.map((s) => ({ pairId, ...s })),
+    );
+  }
+
   return results;
 }
 

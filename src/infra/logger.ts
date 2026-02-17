@@ -5,7 +5,7 @@ export type Level = keyof typeof LEVELS;
 
 let minLevel: Level = "info";
 const logStdout = process.env.LOG_STDOUT !== "0";
-const processName = process.env.WORKER_PAIR_ID || "orchestrator";
+const getProcessName = () => process.env.WORKER_PAIR_ID || "orchestrator";
 
 export interface LogFields {
   pairId?: string;
@@ -40,7 +40,7 @@ function emit(level: Level, msg: string, fields?: LogFields, extra?: unknown[]) 
         _timestamp: ts,
         level,
         msg,
-        process: processName,
+        process: getProcessName(),
         ...fields,
       },
     ]);

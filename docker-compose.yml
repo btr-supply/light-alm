@@ -1,0 +1,79 @@
+services:
+  dragonfly:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:latest
+    restart: unless-stopped
+    expose:
+      - "6379"
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - dragonfly-data:/data
+    command: dragonfly --maxmemory 512mb --proactor_threads 2
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 3
+      start_period: 5s
+
+  openobserve:
+    image: public.ecr.aws/zinclabs/openobserve:latest
+    restart: unless-stopped
+    expose:
+      - "5080"
+    ports:
+      - "127.0.0.1:5080:5080"
+    volumes:
+      - o2-data:/data
+    environment:
+      ZO_ROOT_USER_EMAIL: admin@btr.supply
+      ZO_ROOT_USER_PASSWORD: ${O2_PASSWORD}
+      ZO_DATA_DIR: /data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5080/healthz"]
+      interval: 10s
+      retries: 5
+      start_period: 10s
+
+  backend:
+    build: .
+    restart: unless-stopped
+    expose:
+      - "3001"
+    ports:
+      - "127.0.0.1:3001:3001"
+    depends_on:
+      dragonfly:
+        condition: service_healthy
+      openobserve:
+        condition: service_healthy
+    environment:
+      DRAGONFLY_URL: redis://dragonfly:6379
+      O2_URL: http://openobserve:5080
+      O2_ORG: default
+      O2_TOKEN: ${O2_TOKEN}
+      API_TOKEN: ${API_TOKEN}
+      API_PORT: "3001"
+      PAIRS: ${PAIRS:-USDC-USDT}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3001/api/health"]
+      interval: 10s
+      retries: 3
+      start_period: 15s
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  dragonfly-data:
+  o2-data:

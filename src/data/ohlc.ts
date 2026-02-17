@@ -1,6 +1,6 @@
 import ccxt, { type Exchange } from "ccxt";
-import type { Database } from "bun:sqlite";
 import type { Candle } from "../types";
+import type { DragonflyStore } from "./store-dragonfly";
 import {
   TF,
   TF_MS,
@@ -13,7 +13,6 @@ import {
 } from "../config/params";
 import { log } from "../utils";
 import { ingestToO2 } from "../infra/o2";
-import { saveCandles, getLatestCandleTs } from "./store";
 
 // Cache exchange instances
 const exchanges = new Map<string, Exchange>();
@@ -126,49 +125,61 @@ async function fetchWeightedCandles(pair: string, since: number): Promise<Candle
 
 /**
  * Backfill historical M1 data on startup (30 days).
- * Handles ~43k candles via pagination.
+ * Returns accumulated candles for the in-memory buffer.
  */
-export async function backfill(db: Database, pair: string) {
-  const latestTs = getLatestCandleTs(db);
+export async function backfill(store: DragonflyStore, pair: string): Promise<Candle[]> {
+  const latestTs = await store.getLatestCandleTs();
   const now = Date.now();
   const since = latestTs > 0 ? latestTs + TF_MS : now - BACKFILL_MS;
 
   if (since >= now - TF_MS) {
     log.info(`${pair} OHLC up to date`);
-    return;
+    return [];
   }
 
   log.info(`Backfilling ${pair} M1 OHLC from ${new Date(since).toISOString()}`);
 
+  const allCandles: Candle[] = [];
   let cursor = since;
   let total = 0;
   for (let iter = 0; iter < OHLC_MAX_ITERATIONS && cursor < now; iter++) {
     const candles = await fetchWeightedCandles(pair, cursor);
     if (!candles.length) break;
-    saveCandles(db, candles);
+    ingestToO2(
+      "candles",
+      candles.map((c) => ({ pair, ...c })),
+    );
+    allCandles.push(...candles);
     total += candles.length;
     const lastTs = candles[candles.length - 1].ts;
     if (lastTs + TF_MS <= cursor) break; // prevent stuck cursor
     cursor = lastTs + TF_MS;
     log.debug(`${pair}: backfilled ${total} M1 candles`);
   }
+
+  // Persist cursor for restart resume
+  if (allCandles.length) {
+    await store.setLatestCandleTs(allCandles[allCandles.length - 1].ts);
+  }
+
   log.info(`${pair}: backfilled ${total} M1 candles`);
+  return allCandles;
 }
 
 /**
  * Fetch the latest M1 candle(s) since last stored.
- * Returns ~15 new candles per 15-min cycle.
+ * Returns new candles for the in-memory buffer.
  */
-export async function fetchLatestM1(db: Database, pair: string): Promise<Candle[]> {
-  const latestTs = getLatestCandleTs(db);
+export async function fetchLatestM1(store: DragonflyStore, pair: string): Promise<Candle[]> {
+  const latestTs = await store.getLatestCandleTs();
   const since = latestTs > 0 ? latestTs : Date.now() - TF_MS * OHLC_LATEST_LOOKBACK_CANDLES;
   const candles = await fetchWeightedCandles(pair, since);
   if (candles.length) {
-    saveCandles(db, candles);
     ingestToO2(
       "candles",
       candles.map((c) => ({ pair, ...c })),
     );
+    await store.setLatestCandleTs(candles[candles.length - 1].ts);
   }
   return candles;
 }

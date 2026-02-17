@@ -1,9 +1,10 @@
-import type { Database } from "bun:sqlite";
-import type { PairConfig, Forces, DecisionType, RegimeState, RangeParams } from "./types";
+import type { PairConfig, Forces, DecisionType, RegimeState, RangeParams, Candle } from "./types";
+import type { DragonflyStore } from "./data/store-dragonfly";
 
 export interface PairRuntime {
-  db: Database;
+  store: DragonflyStore;
   config: PairConfig;
+  candles: Candle[];
   epoch: number;
   regimeSuppressUntil: number;
   lastDecision: DecisionType;
@@ -13,6 +14,8 @@ export interface PairRuntime {
   optFitness: number;
   regime: RegimeState | null;
   killSwitch: { active: boolean; reason: string } | null;
+  currentApr: number;
+  optimalApr: number;
 }
 
 /** Wire format for worker state published to DragonflyDB. */
@@ -40,7 +43,6 @@ export function toWorkerState(
   rt: PairRuntime,
   pid: number,
   startTs: number,
-  apr?: { current: number; optimal: number },
   errorMsg?: string,
 ): WorkerState {
   return {
@@ -56,8 +58,8 @@ export function toWorkerState(
     optFitness: rt.optFitness,
     regime: rt.regime,
     killSwitch: rt.killSwitch,
-    currentApr: apr?.current ?? 0,
-    optimalApr: apr?.optimal ?? 0,
+    currentApr: rt.currentApr,
+    optimalApr: rt.optimalApr,
     errorMsg,
   };
 }
@@ -66,10 +68,11 @@ export function toWorkerState(
 
 const registry = new Map<string, PairRuntime>();
 
-export function registerPair(id: string, db: Database, config: PairConfig): PairRuntime {
+export function registerPair(id: string, store: DragonflyStore, config: PairConfig): PairRuntime {
   const rt: PairRuntime = {
-    db,
+    store,
     config,
+    candles: [],
     epoch: 0,
     regimeSuppressUntil: 0,
     lastDecision: "HOLD",
@@ -79,6 +82,8 @@ export function registerPair(id: string, db: Database, config: PairConfig): Pair
     optFitness: 0,
     regime: null,
     killSwitch: null,
+    currentApr: 0,
+    optimalApr: 0,
   };
   registry.set(id, rt);
   return rt;

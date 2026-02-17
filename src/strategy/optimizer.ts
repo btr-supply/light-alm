@@ -1,5 +1,5 @@
 import type { Candle, RangeParams, RegimeState } from "../types";
-import { parkinsonVolatility, parkinsonVforce } from "./indicators";
+import { parkinsonVolatility, parkinsonVforce } from "./forces";
 import { baseRangeWidth, rawDivergence } from "./range";
 import {
   SECONDS_PER_YEAR,
@@ -221,7 +221,6 @@ function simulateWindow(
   if (candles.length < 2) return 0;
 
   let totalFeeApr = 0;
-  let _totalLvrFrac = 0; // sum of crystallized IL fractions at each RS (unused: continuous LVR may already capture this)
   let totalRebalCostUsd = 0;
   let lastRebalEpoch = -(FITNESS_MIN_RS_GAP + 1); // allow first rebalance
 
@@ -272,12 +271,8 @@ function simulateWindow(
       if (divergence > p.rsThreshold && i - lastRebalEpoch >= FITNESS_MIN_RS_GAP) {
         // RANGE SHIFT — crystallize IL as LVR
         // LVR = HODL value - LP value, as fraction of entry value
-        if (posEntryValue > 1e-18) {
-          const currentLp = lpValue(price, posPL, posPH);
-          const currentHodl = hodlValue(price, posEntry, posPL, posPH);
-          const lvr = Math.max(currentHodl - currentLp, 0); // IL is always >= 0
-          _totalLvrFrac += lvr / posEntryValue;
-        }
+        // Note: discrete LVR at RS events is a subset of continuous LVR (Milionis et al.)
+      // accumulated above, so we don't double-count it here.
 
         // Gas + swap friction cost (in USD)
         const swapFriction = (2 * poolFee + FITNESS_SWAP_FRICTION) * (1 + vf / 100);

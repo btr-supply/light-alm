@@ -387,6 +387,12 @@ describe("executePRA", () => {
     await executePRA(fakeDb, pair, allocs, "PRA", PRIVATE_KEY);
 
     expect(calls.mintCalls).toHaveLength(1);
+    const mintArgs = calls.mintCalls[0] as unknown[];
+    // args: [db, pair, alloc, range, amount0, amount1, privateKey]
+    const amt0 = mintArgs[4] as bigint;
+    const amt1 = mintArgs[5] as bigint;
+    expect(amt0).toBe(5000_000000n); // 50% of 10000
+    expect(amt1).toBe(5000_000000n);
   });
 });
 

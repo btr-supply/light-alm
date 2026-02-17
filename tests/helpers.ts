@@ -1,4 +1,4 @@
-import type { Forces, Candle } from "../src/types";
+import type { Forces, Candle, Position, AllocationEntry, PoolSnapshot } from "../src/types";
 import { log } from "../src/utils";
 
 /** Suppress log output for tests. Call in beforeAll. */
@@ -54,6 +54,59 @@ export function synthRandomWalk(count: number, base = 1.0, vol = 0.002): Candle[
       v: 1000 + Math.random() * 500,
     };
   });
+}
+
+const ZERO_POOL = "0x0000000000000000000000000000000000000001" as `0x${string}`;
+
+/** Create a test position with sensible defaults, override any field. */
+export function makePosition(overrides?: Partial<Position>): Position {
+  return {
+    id: "test-pos-1",
+    pool: ZERO_POOL,
+    chain: 1,
+    dex: "uniswap_v3",
+    positionId: "42",
+    tickLower: -100,
+    tickUpper: 100,
+    liquidity: 5000n,
+    amount0: 2500n,
+    amount1: 2500n,
+    entryPrice: 1.0,
+    entryTs: Date.now() - 24 * 3600_000,
+    entryApr: 0.15,
+    entryValueUsd: 5000,
+    ...overrides,
+  };
+}
+
+/** Create a test allocation entry with sensible defaults, override any field. */
+export function makeAllocation(overrides?: Partial<AllocationEntry>): AllocationEntry {
+  return {
+    pool: ZERO_POOL,
+    chain: 1,
+    dex: "uniswap_v3",
+    pct: 1.0,
+    expectedApr: 0.12,
+    ...overrides,
+  };
+}
+
+/** Create a test pool snapshot with sensible defaults, override any field. */
+export function makeSnapshot(overrides?: Partial<PoolSnapshot>): PoolSnapshot {
+  return {
+    pool: ZERO_POOL,
+    chain: 1,
+    ts: Date.now(),
+    volume24h: 100_000,
+    tvl: 5_000_000,
+    feePct: 0.0005,
+    basePriceUsd: 1.0,
+    quotePriceUsd: 1.0,
+    exchangeRate: 1.0,
+    priceChangeH1: 0,
+    priceChangeH24: 0,
+    ...overrides,
+  };
 }
 
 /** Aggregate M1 candles to M15 (optimizer tests). */

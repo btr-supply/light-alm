@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach } from "bun:test";
-import { parkinsonVolatility, parkinsonVforce } from "../../src/strategy/indicators";
+import { parkinsonVolatility, parkinsonVforce } from "../../src/strategy/forces";
 import {
   nelderMead,
   fitness,
@@ -224,9 +224,10 @@ describe("optimize", () => {
     const ctx = baseFitnessCtx(genM15(200));
     const r1 = optimize(ctx, "test");
     const r2 = optimize(ctx, "test"); // should warm-start
-    // Both should produce valid results
     expect(Number.isFinite(r1.fitness)).toBe(true);
     expect(Number.isFinite(r2.fitness)).toBe(true);
+    // Warm-start should produce equal or better fitness
+    expect(r2.fitness).toBeGreaterThanOrEqual(r1.fitness);
   });
 });
 

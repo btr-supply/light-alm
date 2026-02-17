@@ -327,6 +327,7 @@ describe("bridgeCrossChain — cross-chain balance deltas", () => {
 
     const opts = bridgeSwaps[0][0] as { amount: bigint };
     // Surplus is ~30% of 10000 total USD = ~3000 USD -> ~3000_000000 in 6-dec
-    expect(opts.amount).toBeGreaterThan(0n);
+    expect(opts.amount).toBeGreaterThan(2000_000000n);
+    expect(opts.amount).toBeLessThan(4000_000000n);
   });
 });

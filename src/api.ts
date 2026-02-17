@@ -1,33 +1,33 @@
-import { Database } from "bun:sqlite";
-import { existsSync } from "node:fs";
 import { allPairIds, getPair } from "./state";
-import {
-  getPositions,
-  getCandles,
-  getTxLogs,
-  getLatestPairAllocation,
-  getPairAllocations,
-  getEpochSnapshots,
-  getPoolAnalyses,
-  getLatestAnalysesForPools,
-} from "./data/store";
+import { DragonflyStore } from "./data/store-dragonfly";
+import * as o2q from "./data/store-o2";
 import { defaultRangeParams } from "./strategy/optimizer";
 import {
   DEFAULT_API_PORT,
   DEFAULT_CANDLE_WINDOW_MS,
   DEFAULT_TXLOG_LIMIT,
-  DB_DIR,
 } from "./config/params";
+import { DexId } from "./types";
+import { TOKENS } from "./config/tokens";
 import { log } from "./utils";
 import type { WorkerState } from "./state";
-import { KEYS, CHANNELS, getWorkerState } from "./infra/redis";
+import {
+  KEYS,
+  CHANNELS,
+  getWorkerState,
+  getAllConfigPairs,
+  getConfigPair,
+  setConfigPair,
+  deleteConfigPair,
+} from "./infra/redis";
+import type { PairConfigEntry } from "./infra/redis";
 import type { RedisClient } from "bun";
 
 const startTime = Date.now();
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 } as const;
 
@@ -43,33 +43,6 @@ function json(data: unknown, status = 200) {
   );
 }
 
-// Read-only SQLite connection cache for orchestrated mode (evicted periodically)
-const roDbCache = new Map<string, Database>();
-const RO_CACHE_TTL_MS = 300_000; // 5 min
-let lastCacheEviction = Date.now();
-
-function getReadOnlyDb(pairId: string): Database | null {
-  // Periodic eviction to release stale file descriptors
-  const now = Date.now();
-  if (now - lastCacheEviction > RO_CACHE_TTL_MS) {
-    for (const [, db] of roDbCache) {
-      try {
-        db.close();
-      } catch {}
-    }
-    roDbCache.clear();
-    lastCacheEviction = now;
-  }
-
-  const cached = roDbCache.get(pairId);
-  if (cached) return cached;
-  const path = `${DB_DIR}/${pairId}.db`;
-  if (!existsSync(path)) return null;
-  const db = new Database(path, { readonly: true });
-  roDbCache.set(pairId, db);
-  return db;
-}
-
 /**
  * Start the API server.
  * @param port - Listen port
@@ -77,6 +50,14 @@ function getReadOnlyDb(pairId: string): Database | null {
  */
 export function startApi(port = DEFAULT_API_PORT, redis?: RedisClient) {
   const orchestrated = !!redis;
+
+  // DragonflyStore cache for position reads in orchestrated mode
+  const storeCache = new Map<string, DragonflyStore>();
+  function getStore(pairId: string): DragonflyStore | null {
+    if (!redis) return getPair(pairId)?.store ?? null;
+    if (!storeCache.has(pairId)) storeCache.set(pairId, new DragonflyStore(redis, pairId));
+    return storeCache.get(pairId)!;
+  }
 
   // Helper: get pair IDs from Redis or in-memory registry
   async function pairIds(): Promise<string[]> {
@@ -88,13 +69,6 @@ export function startApi(port = DEFAULT_API_PORT, redis?: RedisClient) {
   async function workerState(pairId: string): Promise<WorkerState | null> {
     if (!orchestrated) return null;
     return getWorkerState(redis!, pairId);
-  }
-
-  // Helper: get DB for a pair (read-only in orchestrated mode, live in CLI mode)
-  function dbFor(pairId: string): Database | null {
-    if (orchestrated) return getReadOnlyDb(pairId);
-    const rt = getPair(pairId);
-    return rt?.db ?? null;
   }
 
   const server = Bun.serve({
@@ -134,12 +108,20 @@ export function startApi(port = DEFAULT_API_PORT, redis?: RedisClient) {
         });
       }
 
+      // ---- Auth helper for write endpoints ----
+      function requireAuth(): Response | null {
+        if (!API_TOKEN) return json({ error: "API_TOKEN not configured" }, 403);
+        if (req.headers.get("authorization") !== `Bearer ${API_TOKEN}`) {
+          return json({ error: "Unauthorized" }, 401);
+        }
+        return null;
+      }
+
       // ---- Worker restart (orchestrated mode only) ----
       const restartMatch = path.match(/^\/api\/orchestrator\/workers\/([^/]+)\/restart$/);
       if (restartMatch && req.method === "POST") {
-        if (API_TOKEN && req.headers.get("authorization") !== `Bearer ${API_TOKEN}`) {
-          return json({ error: "Unauthorized" }, 401);
-        }
+        const authErr = requireAuth();
+        if (authErr) return authErr;
         if (!orchestrated) return json({ error: "Not in orchestrated mode" }, 400);
         const targetPairId = restartMatch[1];
         await redis!.publish(
@@ -149,15 +131,94 @@ export function startApi(port = DEFAULT_API_PORT, redis?: RedisClient) {
         return json({ ok: true, message: `Restart command sent for ${targetPairId}` });
       }
 
+      // ---- Config CRUD (orchestrated mode only) ----
+      if (path === "/api/config/pairs" && req.method === "GET") {
+        if (!orchestrated) return json({ error: "Not in orchestrated mode" }, 400);
+        return json(await getAllConfigPairs(redis!));
+      }
+
+      const configMatch = path.match(/^\/api\/config\/pairs\/([^/]+)$/);
+      if (configMatch) {
+        if (!orchestrated) return json({ error: "Not in orchestrated mode" }, 400);
+        const cfgPairId = configMatch[1];
+
+        if (req.method === "GET") {
+          const entry = await getConfigPair(redis!, cfgPairId);
+          return entry ? json(entry) : json({ error: "Config not found" }, 404);
+        }
+
+        if (req.method === "PUT") {
+          const authErr = requireAuth();
+          if (authErr) return authErr;
+
+          // Validate pair ID: TOKEN0-TOKEN1 format with known tokens
+          const parts = cfgPairId.split("-");
+          if (parts.length !== 2 || !TOKENS[parts[0]] || !TOKENS[parts[1]]) {
+            return json({ error: "Invalid pair ID — must be TOKEN0-TOKEN1 with known tokens" }, 400);
+          }
+
+          const body = (await req.json()) as Partial<PairConfigEntry>;
+          if (!body.pools?.length) return json({ error: "pools required" }, 400);
+
+          // Validate pools
+          const validDexIds = new Set(Object.values(DexId));
+          for (const p of body.pools) {
+            if (typeof p.chain !== "number" || p.chain <= 0) {
+              return json({ error: `Invalid chain: ${p.chain}` }, 400);
+            }
+            if (typeof p.address !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(p.address)) {
+              return json({ error: `Invalid pool address: ${p.address}` }, 400);
+            }
+            if (!validDexIds.has(p.dex as DexId)) {
+              return json({ error: `Unknown dex: ${p.dex}` }, 400);
+            }
+          }
+
+          // Validate numeric params
+          const intervalSec = body.intervalSec ?? 900;
+          const maxPositions = body.maxPositions ?? 3;
+          if (intervalSec < 60 || intervalSec > 86400) {
+            return json({ error: "intervalSec must be 60-86400" }, 400);
+          }
+          if (maxPositions < 1 || maxPositions > 20) {
+            return json({ error: "maxPositions must be 1-20" }, 400);
+          }
+
+          // Validate thresholds
+          const thresholds = body.thresholds ?? { pra: 0.05, rs: 0.25 };
+          if (thresholds.pra <= 0 || thresholds.pra >= 1 || thresholds.rs <= 0 || thresholds.rs >= 1) {
+            return json({ error: "thresholds.pra and .rs must be in (0, 1)" }, 400);
+          }
+
+          const entry: PairConfigEntry = {
+            id: cfgPairId,
+            pools: body.pools,
+            intervalSec,
+            maxPositions,
+            thresholds,
+            forceParams: body.forceParams,
+          };
+          await setConfigPair(redis!, entry);
+          return json({ ok: true, config: entry });
+        }
+
+        if (req.method === "DELETE") {
+          const authErr = requireAuth();
+          if (authErr) return authErr;
+          await deleteConfigPair(redis!, cfgPairId);
+          return json({ ok: true, message: `Config ${cfgPairId} deleted` });
+        }
+      }
+
       // ---- Pairs list ----
       if (path === "/api/pairs") {
         const ids = await pairIds();
         const pairs = [];
         for (const id of ids) {
-          const db = dbFor(id);
+          const store = getStore(id);
           const state = orchestrated ? await workerState(id) : getPair(id);
-          const positions = db ? getPositions(db) : [];
-          const alloc = db ? getLatestPairAllocation(db) : null;
+          const positions = store ? await store.getPositions() : [];
+          const alloc = await o2q.getLatestPairAllocation(id);
           pairs.push({
             id,
             positions: positions.length,
@@ -177,9 +238,6 @@ export function startApi(port = DEFAULT_API_PORT, redis?: RedisClient) {
         const pairId = match[1];
         const sub = match[2];
 
-        // Get DB (works in both modes)
-        const db = dbFor(pairId);
-
         if (sub === "status") {
           const state = orchestrated ? await workerState(pairId) : getPair(pairId);
           if (!state) return json({ error: "Pair not found" }, 404);
@@ -198,19 +256,19 @@ export function startApi(port = DEFAULT_API_PORT, redis?: RedisClient) {
           });
         }
 
-        // All remaining endpoints need the DB
-        if (!db) return json({ error: "Pair not found" }, 404);
-
         switch (sub) {
-          case "positions":
-            return json(getPositions(db));
+          case "positions": {
+            const store = getStore(pairId);
+            if (!store) return json({ error: "Pair not found" }, 404);
+            return json(await store.getPositions());
+          }
 
           case "allocations": {
             const limit = url.searchParams.get("limit");
             if (limit) {
-              return json(getPairAllocations(db, parseInt(limit)));
+              return json(await o2q.getPairAllocations(pairId, parseInt(limit)));
             }
-            return json(getLatestPairAllocation(db) ?? null);
+            return json((await o2q.getLatestPairAllocation(pairId)) ?? null);
           }
 
           case "snapshots": {
@@ -218,8 +276,7 @@ export function startApi(port = DEFAULT_API_PORT, redis?: RedisClient) {
             const to = url.searchParams.get("to");
             const limit = url.searchParams.get("limit");
             return json(
-              getEpochSnapshots(
-                db,
+              await o2q.getEpochSnapshots(
                 pairId,
                 from ? parseInt(from) : undefined,
                 to ? parseInt(to) : undefined,
@@ -235,8 +292,7 @@ export function startApi(port = DEFAULT_API_PORT, redis?: RedisClient) {
             const to = url.searchParams.get("to");
             if (pool && chain) {
               return json(
-                getPoolAnalyses(
-                  db,
+                await o2q.getPoolAnalyses(
                   pool,
                   parseInt(chain),
                   from ? parseInt(from) : undefined,
@@ -244,7 +300,7 @@ export function startApi(port = DEFAULT_API_PORT, redis?: RedisClient) {
                 ),
               );
             }
-            return json(getLatestAnalysesForPools(db));
+            return json(await o2q.getLatestAnalysesForPools(pairId));
           }
 
           case "candles": {
@@ -252,12 +308,12 @@ export function startApi(port = DEFAULT_API_PORT, redis?: RedisClient) {
               url.searchParams.get("from") || String(Date.now() - DEFAULT_CANDLE_WINDOW_MS),
             );
             const to = parseInt(url.searchParams.get("to") || String(Date.now()));
-            return json(getCandles(db, from, to));
+            return json(await o2q.getCandles(pairId, from, to));
           }
 
           case "txlog": {
             const limit = parseInt(url.searchParams.get("limit") || String(DEFAULT_TXLOG_LIMIT));
-            return json(getTxLogs(db, limit));
+            return json(await o2q.getTxLogs(pairId, limit));
           }
         }
       }

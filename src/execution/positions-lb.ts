@@ -1,5 +1,5 @@
 import { encodeFunctionData } from "viem";
-import type { Database } from "bun:sqlite";
+import type { DragonflyStore } from "../data/store-dragonfly";
 import type {
   AllocationEntry,
   PairConfig,
@@ -14,8 +14,8 @@ import { getPublicClient, getAccount, sendAndWait, approveTokenPair, requireAddr
 import {
   applySlippage,
   buildAndSaveMintResult,
-  failedMintResult,
-  failedBurnResult,
+  checkMintRevert,
+  checkBurnRevert,
   successBurnResult,
 } from "./positions";
 import { log } from "../utils";
@@ -66,7 +66,7 @@ export function buildDistributions(deltaIds: bigint[]): {
 // ---- Mint ----
 
 export async function mintLBPosition(
-  db: Database,
+  store: DragonflyStore,
   pair: PairConfig,
   allocation: AllocationEntry,
   range: Range,
@@ -155,28 +155,14 @@ export async function mintLBPosition(
   });
 
   const result = await sendAndWait(pool.chain, privateKey, { to: router, data });
-  if (result.status === "reverted") {
-    log.error(`LB mint reverted: ${result.hash}`);
-    return failedMintResult(result);
-  }
+  const reverted = checkMintRevert("LB mint", result);
+  if (reverted) return reverted;
 
   const lowerBin = activeIdNum - halfRange;
   const upperBin = activeIdNum + halfRange;
-  return buildAndSaveMintResult(
-    db,
-    pool,
-    pair,
-    allocation,
-    range,
-    {
-      positionId: `lb:${lowerBin}:${upperBin}`,
-      tickLower: lowerBin,
-      tickUpper: upperBin,
-      liquidity: 0n,
-      amount0,
-      amount1,
-    },
-    { hash: result.hash, gasUsed: result.gasUsed, gasPrice: result.gasPrice },
+  return buildAndSaveMintResult(store, pool, pair, allocation, range,
+    { positionId: `lb:${lowerBin}:${upperBin}`, tickLower: lowerBin, tickUpper: upperBin, liquidity: 0n, amount0, amount1 },
+    result,
   );
 }
 
@@ -291,8 +277,8 @@ export async function burnLBPosition(
       tokenX as `0x${string}`,
       tokenY as `0x${string}`,
       Number(binStep),
-      applySlippage(position.amount0),
-      applySlippage(position.amount1),
+      0n,
+      0n,
       binIds,
       binAmounts,
       account.address,
@@ -304,17 +290,9 @@ export async function burnLBPosition(
   totalGasUsed += result.gasUsed;
   lastGasPrice = result.gasPrice;
 
-  if (result.status === "reverted") {
-    log.error(`LB burn reverted: ${result.hash}`);
-    return failedBurnResult({ hash: result.hash, gasUsed: totalGasUsed, gasPrice: lastGasPrice });
-  }
+  const reverted = checkBurnRevert("LB burn", { hash: result.hash, status: result.status, gasUsed: totalGasUsed, gasPrice: lastGasPrice });
+  if (reverted) return reverted;
 
   log.info(`LB position burned: ${position.id}`);
-  return successBurnResult(
-    position.amount0,
-    position.amount1,
-    result.hash,
-    totalGasUsed,
-    lastGasPrice,
-  );
+  return successBurnResult(position.amount0, position.amount1, { hash: result.hash, gasUsed: totalGasUsed, gasPrice: lastGasPrice });
 }

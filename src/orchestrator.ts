@@ -1,5 +1,5 @@
 import { log, isValidLogLevel, errMsg } from "./utils";
-import { loadPairConfigs } from "./config/pairs";
+import { loadPairConfigs, pairToConfigEntry, configEntryToPair } from "./config/pairs";
 import { startApi } from "./api";
 import {
   ORCHESTRATOR_LOCK_TTL,
@@ -16,7 +16,11 @@ import {
   refreshLock,
   releaseLock,
   getWorkerState,
+  getConfigPairIds,
+  getAllConfigPairs,
+  setConfigPair,
 } from "./infra/redis";
+import { DragonflyStore } from "./data/store-dragonfly";
 import type { Subprocess } from "bun";
 
 const level = process.env.LOG_LEVEL || "info";
@@ -67,10 +71,28 @@ async function main() {
   }
   log.info(`Orchestrator acquired lock (pid=${process.pid})`);
 
-  // Load pair configs
-  const pairs = loadPairConfigs();
+  // Load pair configs: DragonflyDB first, seed from env if empty
+  const existingConfigIds = await getConfigPairIds(redis);
+  if (!existingConfigIds.length) {
+    const envPairs = loadPairConfigs();
+    if (!envPairs.length) {
+      log.error("No pairs configured. Set PAIRS and POOLS_* env vars.");
+      await releaseLock(redis, KEYS.orchestratorLock, lockValue);
+      redis.close();
+      process.exit(1);
+    }
+    for (const pair of envPairs) {
+      await setConfigPair(redis, pairToConfigEntry(pair));
+    }
+    log.info(`Seeded ${envPairs.length} pair config(s) from env into DragonflyDB`);
+  }
+
+  const configEntries = await getAllConfigPairs(redis);
+  const pairs = configEntries
+    .map(configEntryToPair)
+    .filter((p): p is NonNullable<typeof p> => p !== null);
   if (!pairs.length) {
-    log.error("No pairs configured. Set PAIRS and POOLS_* env vars.");
+    log.error("No valid pair configs in DragonflyDB.");
     await releaseLock(redis, KEYS.orchestratorLock, lockValue);
     redis.close();
     process.exit(1);
@@ -82,10 +104,8 @@ async function main() {
   let pairIds = pairs.map((p) => p.id);
   await redis.sadd(KEYS.workers, ...pairIds);
 
-  // Spawn one worker per pair
-  for (const pair of pairs) {
-    spawnWorker(pair.id);
-  }
+  // Subscriber for config changes — set up BEFORE spawning workers to avoid race condition
+  let sub: typeof redis | null = null;
 
   // Start API server (passes redis for state reads)
   const apiPort = parseInt(process.env.API_PORT || String(DEFAULT_API_PORT));
@@ -223,6 +243,7 @@ async function main() {
     await log.shutdown();
 
     try {
+      if (sub) sub.close();
       redis.close();
     } catch {
       // Already disconnected
@@ -230,26 +251,44 @@ async function main() {
     process.exit(0);
   }
 
-  // Config hot-reload: SIGHUP reconciles workers with current config
-  process.on("SIGHUP", async () => {
+  // Reconcile workers with DragonflyDB config (mutex prevents concurrent runs)
+  let reconciling = false;
+  let reconcilePending = false;
+  async function reconcileFromConfig() {
+    if (reconciling) { reconcilePending = true; return; }
+    reconciling = true;
     try {
-      const newPairs = loadPairConfigs();
-      const newIds = new Set(newPairs.map((p) => p.id));
+      const entries = await getAllConfigPairs(redis);
+      const newIds = new Set(entries.map((e) => e.id));
       const oldIds = new Set(pairIds);
 
-      // Stop removed workers
+      // Stop removed workers + clean up store keys
       for (const id of oldIds) {
         if (!newIds.has(id)) {
-          log.info(`Config reload: stopping removed pair ${id}`);
+          log.info(`Config reconcile: stopping removed pair ${id}`);
           const handle = workers.get(id);
           if (handle && handle.proc.exitCode === null) handle.proc.kill();
+          workers.delete(id);
+          const store = new DragonflyStore(redis, id);
+          await store.deleteAll();
+        }
+      }
+
+      // Restart modified workers (same ID, config may have changed)
+      for (const id of newIds) {
+        if (oldIds.has(id)) {
+          const handle = workers.get(id);
+          if (handle && handle.proc.exitCode === null) {
+            log.info(`Config reconcile: restarting modified pair ${id}`);
+            handle.proc.kill();
+          }
         }
       }
 
       // Spawn new workers
       for (const id of newIds) {
         if (!oldIds.has(id)) {
-          log.info(`Config reload: starting new pair ${id}`);
+          log.info(`Config reconcile: starting new pair ${id}`);
           spawnWorker(id);
         }
       }
@@ -257,10 +296,48 @@ async function main() {
       pairIds = [...newIds];
       await redis.del(KEYS.workers);
       if (pairIds.length) await redis.sadd(KEYS.workers, ...pairIds);
-      log.info(`Config reloaded — ${pairIds.length} pair(s)`);
-    } catch (e) {
-      log.error(`Config reload failed: ${errMsg(e)}`);
+      log.info(`Config reconciled — ${pairIds.length} pair(s)`);
+    } finally {
+      reconciling = false;
+      if (reconcilePending) {
+        reconcilePending = false;
+        reconcileFromConfig().catch((e) => log.error(`Config reconcile failed: ${errMsg(e)}`));
+      }
     }
+  }
+
+  // Subscribe to config changes BEFORE spawning workers (prevents race condition)
+  async function connectSubscriber() {
+    try {
+      if (sub) { try { sub.close(); } catch {} }
+      sub = await redis.duplicate();
+      await sub.subscribe(CHANNELS.control, (message: string) => {
+        try {
+          const cmd = JSON.parse(message);
+          if (cmd.type === "CONFIG_CHANGED") {
+            reconcileFromConfig().catch((e) =>
+              log.error(`Config reconcile failed: ${errMsg(e)}`),
+            );
+          }
+        } catch {
+          // Ignore malformed messages
+        }
+      });
+    } catch (e) {
+      log.warn(`Orchestrator subscriber setup failed: ${errMsg(e)}, retrying in 15s`);
+      setTimeout(connectSubscriber, 15_000);
+    }
+  }
+  await connectSubscriber();
+
+  // Now spawn workers — subscriber is ready, no config change messages will be lost
+  for (const pair of pairs) {
+    spawnWorker(pair.id);
+  }
+
+  // SIGHUP also triggers reconciliation
+  process.on("SIGHUP", () => {
+    reconcileFromConfig().catch((e) => log.error(`Config reload failed: ${errMsg(e)}`));
   });
 
   process.on("SIGINT", shutdown);

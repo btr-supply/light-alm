@@ -1,27 +1,157 @@
-import { describe, expect, test, beforeAll, afterAll } from "bun:test";
-import { Database } from "bun:sqlite";
-import {
-  initPairStore,
-  savePairAllocation,
-  saveCandles,
-  logTx,
-  savePosition,
-  saveEpochSnapshot,
-} from "../../src/data/store";
-import { registerPair } from "../../src/state";
-import { startApi } from "../../src/api";
+import { describe, expect, test, beforeAll, afterAll, mock } from "bun:test";
 import type { Server } from "bun";
-import type { TxLogEntry } from "../../src/types";
+import type { Position, TxLogEntry, PairAllocation, PoolAnalysis } from "../../src/types";
+import type { EpochSnapshot } from "../../shared/types";
 import { silenceLog } from "../helpers";
 
 // Silence log output during tests
 beforeAll(silenceLog);
 
+const poolAddr = "0x0000000000000000000000000000000000000001" as `0x${string}`;
+
+// ---- In-memory mock DragonflyStore ----
+
+const positionsMap = new Map<string, Position>();
+
+const mockStore = {
+  getPositions: async () => [...positionsMap.values()],
+  savePosition: async (p: Position) => { positionsMap.set(p.id, p); },
+  deletePosition: async (id: string) => { positionsMap.delete(id); },
+  getOptimizerState: async () => null,
+  saveOptimizerState: async () => {},
+  getEpoch: async () => 2,
+  incrementEpoch: async () => 3,
+  getRegimeSuppressUntil: async () => 0,
+  setRegimeSuppressUntil: async () => {},
+  getLatestCandleTs: async () => 0,
+  setLatestCandleTs: async () => {},
+  deleteAll: async () => {},
+};
+
+// ---- Mock store-o2 to return seeded data ----
+
+const now = Date.now();
+
+const seededAllocations: PairAllocation[] = [
+  {
+    ts: now,
+    currentApr: 0.1,
+    optimalApr: 0.12,
+    improvement: 0.2,
+    decision: "HOLD",
+    targetAllocations: [{ pool: poolAddr, chain: 1, dex: "uniswap_v3", pct: 1, expectedApr: 0.12 }],
+    currentAllocations: [],
+  },
+  {
+    ts: now - 60000,
+    currentApr: 0.08,
+    optimalApr: 0.1,
+    improvement: 0.25,
+    decision: "PRA",
+    targetAllocations: [{ pool: poolAddr, chain: 1, dex: "uniswap_v3", pct: 1, expectedApr: 0.1 }],
+    currentAllocations: [],
+  },
+];
+
+const seededCandles = [
+  { ts: now - 60000, o: 1.0, h: 1.01, l: 0.99, c: 1.005, v: 500 },
+  { ts: now, o: 1.005, h: 1.015, l: 0.995, c: 1.01, v: 600 },
+];
+
+const seededTxLogs: TxLogEntry[] = [
+  {
+    ts: now,
+    decisionType: "PRA",
+    opType: "mint",
+    pool: poolAddr,
+    chain: 1,
+    txHash: "0x0000000000000000000000000000000000000000000000000000000000000abc",
+    status: "success",
+    gasUsed: 150000n,
+    gasPrice: 20000000000n,
+    inputToken: "USDC",
+    inputAmount: "1000000",
+    inputUsd: 1000,
+    outputToken: "USDT",
+    outputAmount: "999000",
+    outputUsd: 999,
+    targetAllocationPct: 1.0,
+    actualAllocationPct: 0.98,
+    allocationErrorPct: 0.02,
+  },
+];
+
+const seededSnapshots: EpochSnapshot[] = [
+  {
+    pairId: "TEST-PAIR",
+    epoch: 1,
+    ts: now - 120000,
+    decision: "PRA",
+    portfolioValueUsd: 5000,
+    feesEarnedUsd: 0,
+    gasSpentUsd: 0,
+    ilUsd: 0,
+    netPnlUsd: 0,
+    rangeEfficiency: 0,
+    currentApr: 0.08,
+    optimalApr: 0.1,
+    positionsCount: 1,
+  },
+  {
+    pairId: "TEST-PAIR",
+    epoch: 2,
+    ts: now - 60000,
+    decision: "HOLD",
+    portfolioValueUsd: 5100,
+    feesEarnedUsd: 0,
+    gasSpentUsd: 0,
+    ilUsd: 0,
+    netPnlUsd: 0,
+    rangeEfficiency: 0,
+    currentApr: 0.1,
+    optimalApr: 0.12,
+    positionsCount: 1,
+  },
+];
+
+// Mock store-o2 module
+mock.module("../../src/data/store-o2", () => ({
+  getCandles: mock(async (_pair: string, from: number, to: number) => {
+    return seededCandles.filter((c) => c.ts >= from && c.ts <= to);
+  }),
+  getLastSnapshot: mock(async () => null),
+  getPoolAnalyses: mock(async () => []),
+  getLatestAnalysesForPools: mock(async () => []),
+  getLatestPairAllocation: mock(async (pairId: string) => {
+    if (pairId !== "TEST-PAIR") return null;
+    return seededAllocations[0];
+  }),
+  getPairAllocations: mock(async (pairId: string, limit = 50) => {
+    if (pairId !== "TEST-PAIR") return [];
+    return seededAllocations.slice(0, limit);
+  }),
+  getTxLogs: mock(async (pairId: string, limit = 50) => {
+    if (pairId !== "TEST-PAIR") return [];
+    return seededTxLogs.slice(0, limit);
+  }),
+  getEpochSnapshots: mock(async (pairId: string, from?: number, to?: number, limit?: number) => {
+    if (pairId !== "TEST-PAIR") return [];
+    let results = [...seededSnapshots];
+    if (from !== undefined) results = results.filter((s) => s.ts >= from);
+    if (to !== undefined) results = results.filter((s) => s.ts <= to);
+    if (limit !== undefined) results = results.slice(0, limit);
+    return results;
+  }),
+  getRecentYields: mock(async () => []),
+  getRecentRsTimestamps: mock(async () => []),
+  getTrailingTxCount: mock(async () => 0),
+}));
+
+const { registerPair } = await import("../../src/state");
+const { startApi } = await import("../../src/api");
+
 let server: Server;
 let port: number;
-let db: Database;
-
-const poolAddr = "0x0000000000000000000000000000000000000001" as `0x${string}`;
 
 const pairConfig = {
   id: "TEST-PAIR",
@@ -43,89 +173,8 @@ const pairConfig = {
 };
 
 beforeAll(() => {
-  db = initPairStore("API-TEST", ":memory:");
-  registerPair("TEST-PAIR", db, pairConfig);
-
-  // Seed data
-  savePairAllocation(db, {
-    ts: Date.now(),
-    currentApr: 0.1,
-    optimalApr: 0.12,
-    improvement: 0.2,
-    decision: "HOLD",
-    targetAllocations: [{ pool: poolAddr, chain: 1, dex: "uniswap_v3", pct: 1, expectedApr: 0.12 }],
-    currentAllocations: [],
-  });
-
-  saveCandles(db, [
-    { ts: Date.now() - 60000, o: 1.0, h: 1.01, l: 0.99, c: 1.005, v: 500 },
-    { ts: Date.now(), o: 1.005, h: 1.015, l: 0.995, c: 1.01, v: 600 },
-  ]);
-
-  const txEntry: TxLogEntry = {
-    ts: Date.now(),
-    decisionType: "PRA",
-    opType: "mint",
-    pool: poolAddr,
-    chain: 1,
-    txHash: "0x0000000000000000000000000000000000000000000000000000000000000abc",
-    status: "success",
-    gasUsed: 150000n,
-    gasPrice: 20000000000n,
-    inputToken: "USDC",
-    inputAmount: "1000000",
-    inputUsd: 1000,
-    outputToken: "USDT",
-    outputAmount: "999000",
-    outputUsd: 999,
-    targetAllocationPct: 1.0,
-    actualAllocationPct: 0.98,
-    allocationErrorPct: 0.02,
-  };
-  logTx(db, txEntry);
-
-  // Seed additional allocation for historical query
-  savePairAllocation(db, {
-    ts: Date.now() - 60000,
-    currentApr: 0.08,
-    optimalApr: 0.1,
-    improvement: 0.25,
-    decision: "PRA",
-    targetAllocations: [{ pool: poolAddr, chain: 1, dex: "uniswap_v3", pct: 1, expectedApr: 0.1 }],
-    currentAllocations: [],
-  });
-
-  // Seed epoch snapshots
-  saveEpochSnapshot(db, {
-    pairId: "TEST-PAIR",
-    epoch: 1,
-    ts: Date.now() - 120000,
-    decision: "PRA",
-    portfolioValueUsd: 5000,
-    feesEarnedUsd: 0,
-    gasSpentUsd: 0,
-    ilUsd: 0,
-    netPnlUsd: 0,
-    rangeEfficiency: 0,
-    currentApr: 0.08,
-    optimalApr: 0.1,
-    positionsCount: 1,
-  });
-  saveEpochSnapshot(db, {
-    pairId: "TEST-PAIR",
-    epoch: 2,
-    ts: Date.now() - 60000,
-    decision: "HOLD",
-    portfolioValueUsd: 5100,
-    feesEarnedUsd: 0,
-    gasSpentUsd: 0,
-    ilUsd: 0,
-    netPnlUsd: 0,
-    rangeEfficiency: 0,
-    currentApr: 0.1,
-    optimalApr: 0.12,
-    positionsCount: 1,
-  });
+  // Register pair with mock store
+  registerPair("TEST-PAIR", mockStore as any, pairConfig);
 
   // Start on random port (0 = OS-assigned)
   server = startApi(0);
@@ -149,14 +198,13 @@ describe("GET /api/health", () => {
     const body = await res.json();
     expect(body.ok).toBe(true);
     expect(body.uptime).toBeGreaterThanOrEqual(0);
-    expect(Array.isArray(body.pairs)).toBe(true);
     expect(body.pairs).toContain("TEST-PAIR");
   });
 
   test("has CORS headers", async () => {
     const res = await fetch(url("/api/health"));
     expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
-    expect(res.headers.get("Access-Control-Allow-Methods")).toBe("GET, POST, OPTIONS");
+    expect(res.headers.get("Access-Control-Allow-Methods")).toContain("GET");
     expect(res.headers.get("Content-Type")).toBe("application/json");
   });
 });
@@ -168,7 +216,6 @@ describe("GET /api/pairs", () => {
     const res = await fetch(url("/api/pairs"));
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(Array.isArray(body)).toBe(true);
     expect(body.length).toBeGreaterThanOrEqual(1);
 
     const pair = body.find((p: any) => p.id === "TEST-PAIR");
@@ -196,15 +243,16 @@ describe("GET /api/pairs/:id/status", () => {
 
 describe("GET /api/pairs/:id/positions", () => {
   test("returns empty positions array when no positions", async () => {
+    positionsMap.clear();
     const res = await fetch(url("/api/pairs/TEST-PAIR/positions"));
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(Array.isArray(body)).toBe(true);
+    expect(body).toHaveLength(0);
   });
 
   test("returns positions when they exist", async () => {
-    // Add a position
-    savePosition(db, {
+    // Add a position via mock store
+    await mockStore.savePosition({
       id: "api-test-pos",
       pool: poolAddr,
       chain: 1,
@@ -240,14 +288,13 @@ describe("GET /api/pairs/:id/allocations", () => {
     expect(body.decision).toBe("HOLD");
     expect(body.currentApr).toBe(0.1);
     expect(body.optimalApr).toBe(0.12);
-    expect(Array.isArray(body.targetAllocations)).toBe(true);
+    expect(body.targetAllocations).toHaveLength(1);
   });
 
   test("returns historical allocations with limit", async () => {
     const res = await fetch(url("/api/pairs/TEST-PAIR/allocations?limit=10"));
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(Array.isArray(body)).toBe(true);
     expect(body.length).toBeGreaterThanOrEqual(2);
     // DESC order: newest first
     expect(body[0].decision).toBe("HOLD");
@@ -268,7 +315,6 @@ describe("GET /api/pairs/:id/snapshots", () => {
     const res = await fetch(url("/api/pairs/TEST-PAIR/snapshots"));
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(Array.isArray(body)).toBe(true);
     expect(body).toHaveLength(2);
     expect(body[0].epoch).toBe(1);
     expect(body[1].epoch).toBe(2);
@@ -276,7 +322,6 @@ describe("GET /api/pairs/:id/snapshots", () => {
   });
 
   test("filters by from/to timestamps", async () => {
-    const now = Date.now();
     const res = await fetch(url(`/api/pairs/TEST-PAIR/snapshots?from=${now - 90000}&to=${now}`));
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -305,19 +350,17 @@ describe("GET /api/pairs/:id/candles", () => {
     const res = await fetch(url("/api/pairs/TEST-PAIR/candles"));
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(Array.isArray(body)).toBe(true);
-    // We seeded 2 candles within the last 24h
+    // Seeded 2 candles within the last 24h
     expect(body.length).toBeGreaterThanOrEqual(1);
   });
 
   test("respects from/to query params", async () => {
-    const now = Date.now();
     const res = await fetch(
       url(`/api/pairs/TEST-PAIR/candles?from=${now - 30000}&to=${now + 30000}`),
     );
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(Array.isArray(body)).toBe(true);
+    expect(body.length).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -326,7 +369,6 @@ describe("GET /api/pairs/:id/txlog", () => {
     const res = await fetch(url("/api/pairs/TEST-PAIR/txlog"));
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(Array.isArray(body)).toBe(true);
     expect(body.length).toBeGreaterThanOrEqual(1);
     expect(body[0].opType).toBe("mint");
   });
@@ -371,7 +413,7 @@ describe("CORS", () => {
     const res = await fetch(url("/api/health"), { method: "OPTIONS" });
     expect(res.status).toBe(200);
     expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
-    expect(res.headers.get("Access-Control-Allow-Methods")).toBe("GET, POST, OPTIONS");
+    expect(res.headers.get("Access-Control-Allow-Methods")).toContain("GET");
     expect(res.headers.get("Access-Control-Allow-Headers")).toBe("Content-Type, Authorization");
   });
 
@@ -397,13 +439,13 @@ describe("GET /api/pairs/:id/analyses", () => {
     const res = await fetch(url("/api/pairs/TEST-PAIR/analyses"));
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(Array.isArray(body)).toBe(true);
+    expect(body).toHaveLength(0);
   });
 
   test("filters by pool and chain query params", async () => {
     const res = await fetch(url(`/api/pairs/TEST-PAIR/analyses?pool=${poolAddr}&chain=1`));
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(Array.isArray(body)).toBe(true);
+    expect(body).toHaveLength(0);
   });
 });

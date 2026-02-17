@@ -14,6 +14,7 @@ export class O2Client {
   private buffer: Record<string, unknown[]> = {};
   private timer: ReturnType<typeof setInterval> | null = null;
   private flushing = false;
+  private streamFlushing = new Set<string>();
   private url: string;
   private org: string;
   private authHeader: string;
@@ -58,8 +59,10 @@ export class O2Client {
   }
 
   private async flushStream(stream: string): Promise<void> {
+    if (this.streamFlushing.has(stream)) return;
     const entries = this.buffer[stream];
     if (!entries?.length) return;
+    this.streamFlushing.add(stream);
     this.buffer[stream] = [];
     try {
       const res = await fetch(`${this.url}/api/${this.org}/${stream}/_json`, {
@@ -70,15 +73,15 @@ export class O2Client {
       });
       if (!res.ok) {
         console.error(`O2 ingest ${stream}: ${res.status} ${res.statusText}`);
-        // Restore entries on failure for retry on next flush
         if (!this.buffer[stream]) this.buffer[stream] = [];
         this.buffer[stream].unshift(...entries);
       }
     } catch (e) {
       console.error(`O2 ingest ${stream}: ${errMsg(e)}`);
-      // Restore entries on network error for retry
       if (!this.buffer[stream]) this.buffer[stream] = [];
       this.buffer[stream].unshift(...entries);
+    } finally {
+      this.streamFlushing.delete(stream);
     }
   }
 }

@@ -1,6 +1,17 @@
 import { RedisClient } from "bun";
 import { DEFAULT_REDIS_URL, WORKER_STATE_TTL_MS } from "../config/params";
 import type { WorkerState } from "../state";
+import type { DexId, ForceParams } from "../types";
+
+/** Storable pair config (no derived fields like token objects). */
+export interface PairConfigEntry {
+  id: string;
+  pools: { chain: number; address: string; dex: DexId }[];
+  intervalSec: number;
+  maxPositions: number;
+  thresholds: { pra: number; rs: number };
+  forceParams?: Partial<ForceParams>;
+}
 
 export const KEYS = {
   orchestratorLock: "btr:orchestrator:lock",
@@ -9,6 +20,8 @@ export const KEYS = {
   workerHeartbeat: (pairId: string) => `btr:worker:${pairId}:heartbeat`,
   workerState: (pairId: string) => `btr:worker:${pairId}:state`,
   workerRestarting: (pairId: string) => `btr:worker:${pairId}:restarting`,
+  configPairs: "btr:config:pairs",
+  configPair: (pairId: string) => `btr:config:pair:${pairId}`,
 } as const;
 
 export const CHANNELS = {
@@ -63,4 +76,46 @@ export async function setWorkerState(
   state: WorkerState,
 ): Promise<void> {
   await redis.set(KEYS.workerState(pairId), JSON.stringify(state), "PX", WORKER_STATE_TTL_MS);
+}
+
+// ---- Config CRUD ----
+
+export async function getConfigPairIds(redis: RedisClient): Promise<string[]> {
+  return redis.smembers(KEYS.configPairs);
+}
+
+export async function getConfigPair(
+  redis: RedisClient,
+  pairId: string,
+): Promise<PairConfigEntry | null> {
+  const raw = await redis.get(KEYS.configPair(pairId));
+  return raw ? JSON.parse(raw) : null;
+}
+
+export async function getAllConfigPairs(redis: RedisClient): Promise<PairConfigEntry[]> {
+  const ids = await getConfigPairIds(redis);
+  const entries: PairConfigEntry[] = [];
+  for (const id of ids) {
+    const entry = await getConfigPair(redis, id);
+    if (entry) entries.push(entry);
+  }
+  return entries;
+}
+
+export async function setConfigPair(
+  redis: RedisClient,
+  entry: PairConfigEntry,
+): Promise<void> {
+  await redis.set(KEYS.configPair(entry.id), JSON.stringify(entry));
+  await redis.sadd(KEYS.configPairs, entry.id);
+  await redis.publish(CHANNELS.control, JSON.stringify({ type: "CONFIG_CHANGED" }));
+}
+
+export async function deleteConfigPair(
+  redis: RedisClient,
+  pairId: string,
+): Promise<void> {
+  await redis.del(KEYS.configPair(pairId));
+  await redis.srem(KEYS.configPairs, pairId);
+  await redis.publish(CHANNELS.control, JSON.stringify({ type: "CONFIG_CHANGED" }));
 }
