@@ -63,15 +63,15 @@ graph TD
 
 | Chain | ID | DEXes |
 |-------|----|----|
-| Ethereum | 1 | Uniswap V3/V4 |
-| BSC | 56 | PancakeSwap V3/V4 |
-| Polygon | 137 | QuickSwap V3 |
-| Base | 8453 | Aerodrome V3 |
-| Arbitrum | 42161 | Ramses, Pharaoh |
-| Avalanche | 43114 | Trader Joe LB, Pangolin |
-| HyperEVM | 999 | Ramses PM |
+| Ethereum | 1 | Uniswap V3/V4, PancakeSwap V3 |
+| BSC | 56 | PancakeSwap V3/V4, Uniswap V3/V4 |
+| Polygon | 137 | Uniswap V3/V4, QuickSwap V3 |
+| Base | 8453 | Aerodrome V3, PancakeSwap V3, Uniswap V4 |
+| Arbitrum | 42161 | Uniswap V3/V4, Camelot V3 |
+| Avalanche | 43114 | Uniswap V3/V4, Pangolin V3, Blackhole V3, Pharaoh, Trader Joe V2/V2.1/V2.2 (LB) |
+| HyperEVM | 999 | Ramses V3, Project X V3, Hybra V4 |
 
-**DEX Families:** V3, Algebra, Aerodrome, V4, LB (Liquidity Book)
+**DEX Families:** V3 (Uniswap-style), Algebra, Aerodrome, V4, LB (Liquidity Book)
 
 ## Quick Start
 
