@@ -8,14 +8,13 @@ BTR Agentic ALM manages Uniswap V3-style liquidity positions with zero human int
 
 ```mermaid
 flowchart LR
-    F[Fetch] --> C[Compute] --> O[Optimize] --> D[Decide] --> E[Execute]
-    E -.->|next epoch| F
+    F[Fetch: OHLC+Pool Data] --> C[Compute Metrics] --> O[Optimize: Pools+Range] --> D[Act: PRA/RS/HOLD]
+    D -.->|next epoch| F
 
     F@{ shape: process }
     C@{ shape: process }
     O@{ shape: process }
     D@{ shape: diamond }
-    E@{ shape: process }
 ```
 
 | Step | What happens |
@@ -30,18 +29,31 @@ flowchart LR
 
 ```mermaid
 graph TD
-    O[Orchestrator + API :3001] -->|Bun.spawn| W1[Worker: pair A]
-    O -->|Bun.spawn| W2[Worker: pair B]
-    O -->|Bun.spawn| W3[Worker: pair N]
+    O[Orchestrator + API :3001] -->|Bun.spawn| W1 & W2 & W3
 
-    O <-->|lock / config| DF[(DragonflyDB)]
+    subgraph Workers
+        W1[Worker: pair A]
+        W2[Worker: pair B]
+        W3[Worker: pair N]
+    end
+
+    subgraph Data
+        DF[(DragonflyDB)]
+        O2[(OpenObserve)]
+    end
+
+    subgraph External
+        CEX[CEX APIs · ccxt]
+        GECKO[GeckoTerminal]
+        CHAINS[EVM Chains · viem]
+        BRIDGE[Li.Fi / Jumper]
+    end
+
+    O <-->|lock / config| DF
     W1 & W2 & W3 <-->|state / positions| DF
-    W1 & W2 & W3 -->|logs / snapshots| O2[(OpenObserve)]
-
-    W1 & W2 & W3 <-->|RPC · viem| CHAINS[EVM Chains]
-    W1 & W2 & W3 -->|prices · ccxt| CEX[CEX APIs]
-    W1 & W2 & W3 -->|pools| GECKO[GeckoTerminal]
-    W1 & W2 & W3 -->|swaps| BRIDGE[Li.Fi / Jumper]
+    W1 & W2 & W3 -->|logs / snapshots| O2
+    W1 & W2 & W3 <--> CHAINS
+    W1 & W2 & W3 --> CEX & GECKO & BRIDGE
 ```
 
 **Orchestrator** — Singleton protected by DragonflyDB lock. Spawns one worker per pair, monitors heartbeats, serves the REST API, respawns with exponential backoff.
