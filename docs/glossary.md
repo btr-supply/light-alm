@@ -96,7 +96,7 @@
 
 ## See Also
 
-- [System Overview](overview.md) -- high-level system description
+- [Architecture](architecture.md) -- system topology and module map
 - [3-Force Model](strategy/forces.md) -- force computation details
 - [Range Optimizer](strategy/optimizer.md) -- Nelder-Mead and regime detection
 - [Architecture](architecture.md) -- module map and tech stack

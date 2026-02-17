@@ -109,4 +109,4 @@ The `criticalForce` (15) is the volatility threshold below which confidence rema
 - [Range Optimizer](optimizer.md) -- online tuning of range parameters
 - [Multi-Source OHLC](../data/ohlc.md) -- M1 candle data source for force computation
 - [Glossary](../glossary.md) -- vforce, mforce, tforce definitions
-- [System Overview](../overview.md) -- where forces fit in the pipeline
+- [Architecture](../architecture.md) -- where forces fit in the pipeline

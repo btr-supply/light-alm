@@ -80,5 +80,5 @@ With $10k capital, the water-fill finds lambda where marginal APRs equalize. Poo
 - [Range Optimizer](optimizer.md) -- fitness function uses similar APR modeling
 - [GeckoTerminal Integration](../data/gecko.md) -- pool APR and TVL data source
 - [Token Rebalancing](../execution/swap.md) -- cross-chain swaps to match target allocations
-- [System Overview](../overview.md) -- where allocation fits in the pipeline
+- [Architecture](../architecture.md) -- where allocation fits in the pipeline
 - [Glossary](../glossary.md) -- APR, TVL, PRA definitions

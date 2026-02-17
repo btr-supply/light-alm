@@ -4,15 +4,30 @@
 
 ```mermaid
 graph TD
-    O[Orchestrator] -->|Bun.spawn| W1[Worker: USDC-USDT]
-    O -->|Bun.spawn| W2[Worker: WETH-USDC]
-    O -->|Bun.spawn| W3[Worker: WBTC-USDC]
-    O --- API[API Server]
-    O --- HM[Health Monitor]
-    O --- DL[DragonflyDB Lock]
-    W1 --- S1[Scheduler + DragonflyStore]
-    W2 --- S2[Scheduler + DragonflyStore]
-    W3 --- S3[Scheduler + DragonflyStore]
+    O[Orchestrator + API :3001] -->|Bun.spawn| W1 & W2
+
+    subgraph Workers
+        W1[Worker: pair A]
+        W2[Worker: pair B]
+    end
+
+    subgraph Data
+        DF[(DragonflyDB)]
+        O2[(OpenObserve)]
+    end
+
+    subgraph External
+        CEX[CEX APIs · ccxt]
+        GECKO[GeckoTerminal]
+        CHAINS[EVM Chains · viem]
+        BRIDGE[Li.Fi / Jumper]
+    end
+
+    O <-->|lock / config| DF
+    W1 & W2 <-->|state| DF
+    W1 & W2 -->|logs+epochs| O2
+    W1 & W2 <--> CHAINS
+    W1 & W2 --> CEX & GECKO & BRIDGE
 ```
 
 The **orchestrator** (`src/orchestrator.ts`) is a singleton process protected by a DragonflyDB lock (TTL 60s, refreshed every 10s). It spawns one worker per configured pair, monitors heartbeats, and respawns crashed workers with exponential backoff (capped at 5 minutes, max 20 retries).
@@ -27,15 +42,12 @@ The **API server** runs inside the orchestrator process. It reads worker state f
 graph LR
     CEX[CEX OHLC] --> F[Fetch]
     Gecko[GeckoTerminal] --> F
-    F --> Forces[Composite Forces]
+    F --> Forces[3-Force Model]
     F --> PA[Pool Analysis]
-    Forces --> C[Compute]
-    PA --> C
-    C --> Opt[Optimizer]
-    C --> Range[Range]
-    C --> WF[Water-Fill]
-    Opt --> D[Decide]
-    Range --> D
+    Forces --> Opt[Optimizer]
+    PA --> WF[Water-Fill]
+    Opt --> Range[Range]
+    Range --> D[Decide]
     WF --> D
     D --> E[Execute]
     E --> Burn
@@ -81,7 +93,6 @@ Key top-level files:
 
 ## See Also
 
-- [System Overview](overview.md) -- what the system does
 - [Decision Engine](strategy/decision.md) -- the decide step in detail
 - [3-Force Model](strategy/forces.md) -- the compute step's signal engine
 - [Range Optimizer](strategy/optimizer.md) -- online parameter tuning

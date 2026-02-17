@@ -4,7 +4,6 @@
 
 | Page | Description |
 |------|-------------|
-| [System Overview](overview.md) | What BTR Light ALM does and key differentiators |
 | [Architecture](architecture.md) | Process topology, data flow, module map, tech stack |
 | [Glossary](glossary.md) | Domain terms and abbreviations |
 
@@ -38,6 +37,7 @@
 
 | Page | Description |
 |------|-------------|
+| [Deployment](infrastructure/deployment.md) | Dev/prod Docker setup, environment variables, volumes |
 | [Process Orchestration](infrastructure/orchestrator.md) | Worker spawning, DragonflyDB locks, health monitoring |
 | [REST API](infrastructure/api.md) | Endpoints, dual-mode, authentication |
 | [Observability](infrastructure/observability.md) | Structured logger, OpenObserve buffered ingestion |
