@@ -1,5 +1,4 @@
 import { describe, expect, test, mock, beforeEach } from "bun:test";
-import type { Database } from "bun:sqlite";
 import type {
   PairConfig,
   AllocationEntry,
@@ -11,7 +10,7 @@ import type {
 
 // ---- Track calls for assertions ----
 const calls = {
-  logTx: [] as TxLogEntry[],
+  logTx: [] as any[],
   deletedPositions: [] as string[],
   burnCalls: [] as Position[],
   mintCalls: [] as unknown[],
@@ -35,22 +34,38 @@ function resetCalls() {
 const mockPositions: Position[] = [];
 const mockCandles = [{ ts: Date.now(), o: 1.0, h: 1.001, l: 0.999, c: 1.0, v: 1000 }];
 
-// Store mock: only override what executor uses, pass-through the rest.
-// We load the real module first, then spread its exports into the mock factory.
-const _realStore = await import("../../src/data/store");
-mock.module("../../src/data/store", () => {
-  const s = { ..._realStore };
-  s.getPositions = mock((_db: Database) => mockPositions) as typeof s.getPositions;
-  s.getCandles = mock(
-    (_db: Database, _from: number, _to: number) => mockCandles,
-  ) as typeof s.getCandles;
-  s.logTx = mock((_db: Database, entry: TxLogEntry) => {
-    calls.logTx.push(entry);
-  }) as typeof s.logTx;
-  s.deletePosition = mock((_db: Database, id: string) => {
+// ---- In-memory mock DragonflyStore ----
+
+const positionsMap = new Map<string, Position>();
+
+const mockStore = {
+  savePosition: async (p: Position) => { positionsMap.set(p.id, p); },
+  getPositions: async () => mockPositions.length > 0 ? [...mockPositions] : [...positionsMap.values()],
+  deletePosition: async (id: string) => {
     calls.deletedPositions.push(id);
-  }) as typeof s.deletePosition;
-  return s;
+    positionsMap.delete(id);
+  },
+  getOptimizerState: async () => null,
+  saveOptimizerState: async () => {},
+  getEpoch: async () => 0,
+  incrementEpoch: async () => 1,
+  getRegimeSuppressUntil: async () => 0,
+  setRegimeSuppressUntil: async () => {},
+  getLatestCandleTs: async () => 0,
+  setLatestCandleTs: async () => {},
+  deleteAll: async () => { positionsMap.clear(); },
+};
+
+// Mock O2 ingest to capture tx logs
+const _realO2 = await import("../../src/infra/o2");
+mock.module("../../src/infra/o2", () => {
+  const o = { ..._realO2 };
+  o.ingestToO2 = mock((stream: string, rows: any[]) => {
+    if (stream === "tx_log") {
+      calls.logTx.push(...rows);
+    }
+  }) as typeof o.ingestToO2;
+  return o;
 });
 
 let burnResult: {
@@ -224,11 +239,12 @@ function makePosition(pool = POOL1_ADDR, chain = 1, valueUsd = 1000, apr = 0.1):
   };
 }
 
-const fakeDb = {} as Database;
+const fakeStore = mockStore as any;
 
 function resetMocks() {
   resetCalls();
   mockPositions.length = 0;
+  positionsMap.clear();
   burnResult = {
     success: true,
     amount0: 500_000000n,
@@ -255,7 +271,7 @@ describe("withRetry (via executePRA)", () => {
   test("mint succeeds on first try", async () => {
     const pair = makePair();
     const allocs = [makeAllocation()];
-    await executePRA(fakeDb, pair, allocs, "PRA", PRIVATE_KEY);
+    await executePRA(fakeStore, pair, allocs, "PRA", PRIVATE_KEY);
     const mintLogs = calls.logTx.filter((e) => e.opType === "mint");
     expect(mintLogs).toHaveLength(1);
     expect(mintLogs[0].status).toBe("success");
@@ -273,7 +289,7 @@ describe("executePRA", () => {
     const pair = makePair();
     const allocs = [makeAllocation()];
 
-    await executePRA(fakeDb, pair, allocs, "PRA", PRIVATE_KEY);
+    await executePRA(fakeStore, pair, allocs, "PRA", PRIVATE_KEY);
 
     const burnLogs = calls.logTx.filter((e) => e.opType === "burn");
     expect(burnLogs).toHaveLength(1);
@@ -300,7 +316,7 @@ describe("executePRA", () => {
 
     const pair = makePair();
     const allocs = [makeAllocation()];
-    await executePRA(fakeDb, pair, allocs, "PRA", PRIVATE_KEY);
+    await executePRA(fakeStore, pair, allocs, "PRA", PRIVATE_KEY);
 
     const burnLogs = calls.logTx.filter((e) => e.opType === "burn");
     expect(burnLogs).toHaveLength(1);
@@ -315,7 +331,7 @@ describe("executePRA", () => {
   test("no existing positions: skips burn, proceeds to mint", async () => {
     const pair = makePair();
     const allocs = [makeAllocation()];
-    await executePRA(fakeDb, pair, allocs, "PRA", PRIVATE_KEY);
+    await executePRA(fakeStore, pair, allocs, "PRA", PRIVATE_KEY);
 
     expect(calls.burnCalls).toHaveLength(0);
     const mintLogs = calls.logTx.filter((e) => e.opType === "mint");
@@ -326,7 +342,7 @@ describe("executePRA", () => {
     setDefaultBalances(0n, 0n);
     const pair = makePair();
     const allocs = [makeAllocation()];
-    await executePRA(fakeDb, pair, allocs, "PRA", PRIVATE_KEY);
+    await executePRA(fakeStore, pair, allocs, "PRA", PRIVATE_KEY);
 
     const mintLogs = calls.logTx.filter((e) => e.opType === "mint");
     expect(mintLogs).toHaveLength(0);
@@ -340,7 +356,7 @@ describe("executePRA", () => {
     };
     const pair = makePair();
     const allocs = [makeAllocation()];
-    await executePRA(fakeDb, pair, allocs, "PRA", PRIVATE_KEY, forces);
+    await executePRA(fakeStore, pair, allocs, "PRA", PRIVATE_KEY, forces);
 
     const mintLogs = calls.logTx.filter((e) => e.opType === "mint");
     expect(mintLogs).toHaveLength(1);
@@ -349,7 +365,7 @@ describe("executePRA", () => {
   test("logs target allocation pct on mint", async () => {
     const pair = makePair();
     const allocs = [makeAllocation(POOL1_ADDR, 0.75)];
-    await executePRA(fakeDb, pair, allocs, "PRA", PRIVATE_KEY);
+    await executePRA(fakeStore, pair, allocs, "PRA", PRIVATE_KEY);
 
     const mintLogs = calls.logTx.filter((e) => e.opType === "mint");
     expect(mintLogs).toHaveLength(1);
@@ -359,7 +375,7 @@ describe("executePRA", () => {
   test("passes correct decision type through to tx log", async () => {
     const pair = makePair();
     const allocs = [makeAllocation()];
-    await executePRA(fakeDb, pair, allocs, "RS", PRIVATE_KEY);
+    await executePRA(fakeStore, pair, allocs, "RS", PRIVATE_KEY);
 
     for (const entry of calls.logTx) {
       expect(entry.decisionType).toBe("RS");
@@ -374,7 +390,7 @@ describe("executePRA", () => {
       ],
     });
     const allocs = [makeAllocation(POOL1_ADDR, 0.6), makeAllocation(POOL2_ADDR, 0.4)];
-    await executePRA(fakeDb, pair, allocs, "PRA", PRIVATE_KEY);
+    await executePRA(fakeStore, pair, allocs, "PRA", PRIVATE_KEY);
 
     const mintLogs = calls.logTx.filter((e) => e.opType === "mint");
     expect(mintLogs).toHaveLength(2);
@@ -384,11 +400,11 @@ describe("executePRA", () => {
     setDefaultBalances(10000_000000n, 10000_000000n);
     const pair = makePair();
     const allocs = [makeAllocation(POOL1_ADDR, 0.5)];
-    await executePRA(fakeDb, pair, allocs, "PRA", PRIVATE_KEY);
+    await executePRA(fakeStore, pair, allocs, "PRA", PRIVATE_KEY);
 
     expect(calls.mintCalls).toHaveLength(1);
     const mintArgs = calls.mintCalls[0] as unknown[];
-    // args: [db, pair, alloc, range, amount0, amount1, privateKey]
+    // args: [store, pair, alloc, range, amount0, amount1, privateKey]
     const amt0 = mintArgs[4] as bigint;
     const amt1 = mintArgs[5] as bigint;
     expect(amt0).toBe(5000_000000n); // 50% of 10000
@@ -406,7 +422,7 @@ describe("logTransaction (via executePRA)", () => {
     mockPositions.push(pos);
     const pair = makePair();
     const allocs = [makeAllocation()];
-    await executePRA(fakeDb, pair, allocs, "PRA", PRIVATE_KEY);
+    await executePRA(fakeStore, pair, allocs, "PRA", PRIVATE_KEY);
 
     const burnLog = calls.logTx.find((e) => e.opType === "burn")!;
     expect(burnLog).toBeDefined();
@@ -428,7 +444,7 @@ describe("logTransaction (via executePRA)", () => {
   test("defaults optional fields to zero/empty", async () => {
     const pair = makePair();
     const allocs = [makeAllocation()];
-    await executePRA(fakeDb, pair, allocs, "PRA", PRIVATE_KEY);
+    await executePRA(fakeStore, pair, allocs, "PRA", PRIVATE_KEY);
 
     const mintLog = calls.logTx.find((e) => e.opType === "mint")!;
     expect(mintLog.inputToken).toBe("");
@@ -443,7 +459,7 @@ describe("logTransaction (via executePRA)", () => {
   test("allocationErrorPct = abs(target - actual)", async () => {
     const pair = makePair();
     const allocs = [makeAllocation(POOL1_ADDR, 0.8)];
-    await executePRA(fakeDb, pair, allocs, "PRA", PRIVATE_KEY);
+    await executePRA(fakeStore, pair, allocs, "PRA", PRIVATE_KEY);
 
     const mintLog = calls.logTx.find((e) => e.opType === "mint")!;
     expect(mintLog.allocationErrorPct).toBe(Math.abs(0.8 - 0));
@@ -480,7 +496,7 @@ describe("executeRS", () => {
     const pair = makePair();
     const shifts = [{ pool: POOL1_ADDR, chain: 1, oldRange, newRange }];
 
-    await executeRS(fakeDb, pair, shifts, "RS", PRIVATE_KEY);
+    await executeRS(fakeStore, pair, shifts, "RS", PRIVATE_KEY);
 
     const burnLogs = calls.logTx.filter((e) => e.opType === "burn");
     expect(burnLogs).toHaveLength(1);
@@ -499,7 +515,7 @@ describe("executeRS", () => {
     const pair = makePair();
     const shifts = [{ pool: POOL2_ADDR, chain: 1, oldRange, newRange }];
 
-    await executeRS(fakeDb, pair, shifts, "RS", PRIVATE_KEY);
+    await executeRS(fakeStore, pair, shifts, "RS", PRIVATE_KEY);
 
     expect(calls.burnCalls).toHaveLength(0);
     expect(calls.logTx).toHaveLength(0);
@@ -530,7 +546,7 @@ describe("executeRS", () => {
       { pool: POOL1_ADDR, chain: 1, oldRange, newRange },
       { pool: POOL2_ADDR, chain: 1, oldRange, newRange },
     ];
-    await executeRS(fakeDb, pair, shifts, "RS", PRIVATE_KEY);
+    await executeRS(fakeStore, pair, shifts, "RS", PRIVATE_KEY);
 
     const burnLogs = calls.logTx.filter((e) => e.opType === "burn");
     expect(burnLogs).toHaveLength(2);
@@ -555,7 +571,7 @@ describe("executeRS", () => {
       { pool: POOL2_ADDR, chain: 1, oldRange, newRange },
     ];
 
-    await executeRS(fakeDb, pair, shifts, "RS", PRIVATE_KEY);
+    await executeRS(fakeStore, pair, shifts, "RS", PRIVATE_KEY);
 
     const mintLogs = calls.logTx.filter((e) => e.opType === "mint");
     expect(mintLogs).toHaveLength(2);
@@ -570,7 +586,7 @@ describe("executeRS", () => {
     const pair = makePair();
     const shifts = [{ pool: POOL1_ADDR, chain: 1, oldRange, newRange }];
 
-    await executeRS(fakeDb, pair, shifts, "RS", PRIVATE_KEY);
+    await executeRS(fakeStore, pair, shifts, "RS", PRIVATE_KEY);
 
     expect(calls.mintCalls).toHaveLength(1);
     const mintCallArgs = calls.mintCalls[0] as unknown[];
@@ -583,7 +599,7 @@ describe("executeRS", () => {
     const pair = makePair();
     const shifts = [{ pool: POOL1_ADDR, chain: 1, oldRange, newRange }];
 
-    await executeRS(fakeDb, pair, shifts, "RS", PRIVATE_KEY);
+    await executeRS(fakeStore, pair, shifts, "RS", PRIVATE_KEY);
 
     const mintCallArgs = calls.mintCalls[0] as unknown[];
     const alloc = mintCallArgs[2] as AllocationEntry;
@@ -599,7 +615,7 @@ describe("rebalanceTokenRatio (via executePRA)", () => {
   test("no swap when balances are balanced (imbalance <= 5%)", async () => {
     const pair = makePair();
     const allocs = [makeAllocation()];
-    await executePRA(fakeDb, pair, allocs, "PRA", PRIVATE_KEY);
+    await executePRA(fakeStore, pair, allocs, "PRA", PRIVATE_KEY);
 
     expect(calls.swapCalls).toHaveLength(0);
   });
@@ -608,7 +624,7 @@ describe("rebalanceTokenRatio (via executePRA)", () => {
     setDefaultBalances(900_000000n, 100_000000n);
     const pair = makePair();
     const allocs = [makeAllocation()];
-    await executePRA(fakeDb, pair, allocs, "PRA", PRIVATE_KEY);
+    await executePRA(fakeStore, pair, allocs, "PRA", PRIVATE_KEY);
 
     expect(calls.swapCalls.length).toBeGreaterThanOrEqual(1);
   });
@@ -650,7 +666,7 @@ describe("bridgeCrossChain (via executePRA)", () => {
 
     const allocs = [makeAllocation(POOL1_ADDR, 0.5, 1), makeAllocation(POOL2_ADDR, 0.5, 56)];
 
-    await executePRA(fakeDb, pair, allocs, "PRA", PRIVATE_KEY);
+    await executePRA(fakeStore, pair, allocs, "PRA", PRIVATE_KEY);
 
     // Should have called swapTokens with fromChain !== toChain (cross-chain bridge)
     const bridgeSwaps = calls.swapCalls.filter((args: unknown[]) => {
@@ -667,7 +683,7 @@ describe("bridgeCrossChain (via executePRA)", () => {
   test("skips bridge when all allocations are on the same chain", async () => {
     const pair = makePair();
     const allocs = [makeAllocation(POOL1_ADDR, 1, 1)];
-    await executePRA(fakeDb, pair, allocs, "PRA", PRIVATE_KEY);
+    await executePRA(fakeStore, pair, allocs, "PRA", PRIVATE_KEY);
 
     const bridgeSwaps = calls.swapCalls.filter((args: unknown[]) => {
       const opts = args[0] as { fromChain: number; toChain: number };

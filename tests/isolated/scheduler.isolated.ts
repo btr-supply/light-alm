@@ -1,7 +1,5 @@
 import { describe, expect, test, mock, beforeEach, beforeAll } from "bun:test";
-import { Database } from "bun:sqlite";
-import type { PairConfig, PoolConfig, PoolSnapshot } from "../../src/types";
-import { initPairStore, getLatestPairAllocation } from "../../src/data/store";
+import type { PairConfig, PoolConfig, PoolSnapshot, Position } from "../../src/types";
 import { silenceLog } from "../helpers";
 
 beforeAll(silenceLog);
@@ -11,6 +9,48 @@ const poolAddr = "0x0000000000000000000000000000000000000001" as `0x${string}`;
 let mockSnapshots: PoolSnapshot[] = [];
 const executePRAMock = mock(async () => {});
 const executeRSMock = mock(async () => {});
+
+// ---- In-memory mock DragonflyStore ----
+
+const positionsMap = new Map<string, Position>();
+let optimizerState: { vec: number[]; fitness: number } | null = null;
+let epoch = 0;
+let regimeSuppress = 0;
+let candleCursor = 0;
+
+const mockStore = {
+  savePosition: async (p: Position) => { positionsMap.set(p.id, p); },
+  getPositions: async () => [...positionsMap.values()],
+  deletePosition: async (id: string) => { positionsMap.delete(id); },
+  getOptimizerState: async () => optimizerState,
+  saveOptimizerState: async (vec: number[], fitness: number) => {
+    optimizerState = { vec, fitness };
+  },
+  getEpoch: async () => epoch,
+  incrementEpoch: async () => ++epoch,
+  getRegimeSuppressUntil: async () => regimeSuppress,
+  setRegimeSuppressUntil: async (e: number) => { regimeSuppress = e; },
+  getLatestCandleTs: async () => candleCursor,
+  setLatestCandleTs: async (ts: number) => { candleCursor = ts; },
+  deleteAll: async () => {
+    positionsMap.clear();
+    optimizerState = null;
+    epoch = 0;
+    regimeSuppress = 0;
+    candleCursor = 0;
+  },
+};
+
+function resetMockStore() {
+  positionsMap.clear();
+  optimizerState = null;
+  epoch = 0;
+  regimeSuppress = 0;
+  candleCursor = 0;
+}
+
+// ---- Track ingested pair allocations ----
+let lastIngestedAllocation: any = null;
 
 mock.module("../../src/data/ohlc", () => ({
   fetchLatestM1: mock(async () => []),
@@ -33,12 +73,32 @@ mock.module("../../src/executor", () => ({
   executeRS: executeRSMock,
 }));
 
+mock.module("../../src/data/store-o2", () => ({
+  getLastSnapshot: mock(async () => null),
+  getLatestPairAllocation: mock(async () => lastIngestedAllocation),
+  getPairAllocations: mock(async () => lastIngestedAllocation ? [lastIngestedAllocation] : []),
+  getRecentYields: mock(async () => []),
+  getRecentRsTimestamps: mock(async () => []),
+  getTrailingTxCount: mock(async () => 0),
+  getCandles: mock(async () => []),
+  getPoolAnalyses: mock(async () => []),
+  getLatestAnalysesForPools: mock(async () => []),
+  getTxLogs: mock(async () => []),
+  getEpochSnapshots: mock(async () => []),
+}));
+
+mock.module("../../src/infra/o2", () => ({
+  ingestToO2: mock((stream: string, rows: any[]) => {
+    if (stream === "pair_allocations" && rows.length > 0) {
+      lastIngestedAllocation = rows[0];
+    }
+  }),
+}));
+
 const { runSingleCycle } = await import("../../src/scheduler");
 const { registerPair, getPair } = await import("../../src/state");
 
 describe("cycle", () => {
-  let db: Database;
-
   const poolCfg: PoolConfig = {
     address: poolAddr,
     chain: 1,
@@ -65,9 +125,10 @@ describe("cycle", () => {
   };
 
   beforeEach(() => {
-    db = initPairStore("CYCLE-TEST", ":memory:");
-    registerPair(pair.id, db, pair);
+    resetMockStore();
+    registerPair(pair.id, mockStore as any, pair);
     mockSnapshots = [];
+    lastIngestedAllocation = null;
     executePRAMock.mockClear();
     executeRSMock.mockClear();
   });
@@ -88,7 +149,7 @@ describe("cycle", () => {
 
   test("returns HOLD when no snapshots available", async () => {
     mockSnapshots = [];
-    const decision = await runSingleCycle(db, pair, null);
+    const decision = await runSingleCycle(mockStore as any, pair, null);
     expect(decision.type).toBe("HOLD");
     expect(decision.currentApr).toBe(0);
     expect(decision.optimalApr).toBe(0);
@@ -97,7 +158,7 @@ describe("cycle", () => {
 
   test("returns a valid decision when snapshots are available", async () => {
     mockSnapshots = [snapshot];
-    const decision = await runSingleCycle(db, pair, null);
+    const decision = await runSingleCycle(mockStore as any, pair, null);
     expect(["HOLD", "PRA", "RS"]).toContain(decision.type);
     expect(decision.ts).toBeGreaterThan(0);
     expect(typeof decision.currentApr).toBe("number");
@@ -106,32 +167,31 @@ describe("cycle", () => {
 
   test("does not execute when privateKey is null", async () => {
     mockSnapshots = [snapshot];
-    await runSingleCycle(db, pair, null);
+    await runSingleCycle(mockStore as any, pair, null);
     expect(executePRAMock).not.toHaveBeenCalled();
     expect(executeRSMock).not.toHaveBeenCalled();
   });
 
   test("decision has valid improvement field", async () => {
     mockSnapshots = [snapshot];
-    const decision = await runSingleCycle(db, pair, null);
+    const decision = await runSingleCycle(mockStore as any, pair, null);
     expect(typeof decision.improvement).toBe("number");
     expect(Number.isFinite(decision.improvement)).toBe(true);
   });
 
-  test("persists pair allocation to DB after cycle", async () => {
+  test("persists pair allocation via O2 ingestion after cycle", async () => {
     mockSnapshots = [snapshot];
-    await runSingleCycle(db, pair, null);
-    const alloc = getLatestPairAllocation(db);
-    expect(alloc).not.toBeNull();
-    expect(typeof alloc!.decision).toBe("string");
-    expect(["HOLD", "PRA", "RS"]).toContain(alloc!.decision);
+    await runSingleCycle(mockStore as any, pair, null);
+    expect(lastIngestedAllocation).not.toBeNull();
+    expect(typeof lastIngestedAllocation.decision).toBe("string");
+    expect(["HOLD", "PRA", "RS"]).toContain(lastIngestedAllocation.decision);
   });
 
   test("increments epoch in runtime state", async () => {
     const rt = getPair(pair.id);
     const epochBefore = rt?.epoch ?? 0;
     mockSnapshots = [snapshot];
-    await runSingleCycle(db, pair, null);
+    await runSingleCycle(mockStore as any, pair, null);
     const rtAfter = getPair(pair.id);
     expect(rtAfter!.epoch).toBe(epochBefore + 1);
   });
@@ -140,8 +200,8 @@ describe("cycle", () => {
     mockSnapshots = [snapshot];
     const pk =
       "0x0000000000000000000000000000000000000000000000000000000000000001" as `0x${string}`;
-    const decision = await runSingleCycle(db, pair, pk);
-    // No existing positions + positive optimalApr → 100% improvement → PRA
+    const decision = await runSingleCycle(mockStore as any, pair, pk);
+    // No existing positions + positive optimalApr -> 100% improvement -> PRA
     expect(decision.type).toBe("PRA");
     expect(executePRAMock).toHaveBeenCalledTimes(1);
   });

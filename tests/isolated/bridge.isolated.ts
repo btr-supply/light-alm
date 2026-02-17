@@ -1,5 +1,4 @@
 import { describe, expect, test, mock, beforeEach } from "bun:test";
-import type { Database } from "bun:sqlite";
 import type {
   PairConfig,
   AllocationEntry,
@@ -11,7 +10,7 @@ import type {
 
 // ---- Track calls ----
 const calls = {
-  logTx: [] as TxLogEntry[],
+  logTx: [] as any[],
   deletedPositions: [] as string[],
   burnCalls: [] as Position[],
   mintCalls: [] as unknown[],
@@ -30,22 +29,39 @@ function resetCalls() {
 
 // ---- Mock modules ----
 const mockPositions: Position[] = [];
-const mockCandles = [{ ts: Date.now(), o: 1.0, h: 1.001, l: 0.999, c: 1.0, v: 1000 }];
 
-const _realStore = await import("../../src/data/store");
-mock.module("../../src/data/store", () => {
-  const s = { ..._realStore };
-  s.getPositions = mock((_db: Database) => mockPositions) as typeof s.getPositions;
-  s.getCandles = mock(
-    (_db: Database, _from: number, _to: number) => mockCandles,
-  ) as typeof s.getCandles;
-  s.logTx = mock((_db: Database, entry: TxLogEntry) => {
-    calls.logTx.push(entry);
-  }) as typeof s.logTx;
-  s.deletePosition = mock((_db: Database, id: string) => {
+// ---- In-memory mock DragonflyStore ----
+
+const positionsMap = new Map<string, Position>();
+
+const mockStore = {
+  savePosition: async (p: Position) => { positionsMap.set(p.id, p); },
+  getPositions: async () => mockPositions.length > 0 ? [...mockPositions] : [...positionsMap.values()],
+  deletePosition: async (id: string) => {
     calls.deletedPositions.push(id);
-  }) as typeof s.deletePosition;
-  return s;
+    positionsMap.delete(id);
+  },
+  getOptimizerState: async () => null,
+  saveOptimizerState: async () => {},
+  getEpoch: async () => 0,
+  incrementEpoch: async () => 1,
+  getRegimeSuppressUntil: async () => 0,
+  setRegimeSuppressUntil: async () => {},
+  getLatestCandleTs: async () => 0,
+  setLatestCandleTs: async () => {},
+  deleteAll: async () => { positionsMap.clear(); },
+};
+
+// Mock O2 ingest to capture tx logs
+const _realO2 = await import("../../src/infra/o2");
+mock.module("../../src/infra/o2", () => {
+  const o = { ..._realO2 };
+  o.ingestToO2 = mock((stream: string, rows: any[]) => {
+    if (stream === "tx_log") {
+      calls.logTx.push(...rows);
+    }
+  }) as typeof o.ingestToO2;
+  return o;
 });
 
 let burnResult: {
@@ -144,7 +160,7 @@ const ETH_USDT = "0xdAC17F958D2ee523a2206206994597C13D831ec7" as `0x${string}`;
 const BSC_USDC = "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d" as `0x${string}`;
 const BSC_USDT = "0x55d398326f99059fF775485246999027B3197955" as `0x${string}`;
 const PK = "0x0000000000000000000000000000000000000000000000000000000000000001" as `0x${string}`;
-const fakeDb = {} as Database;
+const fakeStore = mockStore as any;
 
 function makeMultiChainPair(): PairConfig {
   return {
@@ -176,6 +192,7 @@ describe("bridgeCrossChain — cross-chain balance deltas", () => {
   beforeEach(() => {
     resetCalls();
     mockPositions.length = 0;
+    positionsMap.clear();
     burnResult = {
       success: true,
       amount0: 500_000000n,
@@ -223,7 +240,7 @@ describe("bridgeCrossChain — cross-chain balance deltas", () => {
       { pool: POOL2, chain: 56, dex: "uniswap_v3", pct: 0.5, expectedApr: 0.15 },
     ];
 
-    await executePRA(fakeDb, pair, allocs, "PRA", PK);
+    await executePRA(fakeStore, pair, allocs, "PRA", PK);
 
     const bridgeSwaps = calls.swapCalls.filter((args: unknown[]) => {
       const opts = args[0] as { fromChain: number; toChain: number };
@@ -264,7 +281,7 @@ describe("bridgeCrossChain — cross-chain balance deltas", () => {
     };
 
     await executePRA(
-      fakeDb,
+      fakeStore,
       pair,
       [{ pool: POOL1, chain: 1, dex: "uniswap_v3", pct: 1, expectedApr: 0.15 }],
       "PRA",
@@ -293,7 +310,7 @@ describe("bridgeCrossChain — cross-chain balance deltas", () => {
       { pool: POOL2, chain: 56, dex: "uniswap_v3", pct: 0.5, expectedApr: 0.15 },
     ];
 
-    await executePRA(fakeDb, pair, allocs, "PRA", PK);
+    await executePRA(fakeStore, pair, allocs, "PRA", PK);
 
     const bridgeSwaps = calls.swapCalls.filter((args: unknown[]) => {
       const opts = args[0] as { fromChain: number; toChain: number };
@@ -317,7 +334,7 @@ describe("bridgeCrossChain — cross-chain balance deltas", () => {
       { pool: POOL2, chain: 56, dex: "uniswap_v3", pct: 0.5, expectedApr: 0.15 },
     ];
 
-    await executePRA(fakeDb, pair, allocs, "PRA", PK);
+    await executePRA(fakeStore, pair, allocs, "PRA", PK);
 
     const bridgeSwaps = calls.swapCalls.filter((args: unknown[]) => {
       const opts = args[0] as { fromChain: number; toChain: number };
