@@ -24,9 +24,11 @@ All changes must be committed as **small, logical units**. Each commit should:
 ### Commit Message Format
 
 ```
-<type>: <subject>
+<type>(scope): <subject>
 
 <body (optional)>
+
+<footer (optional)>
 ```
 
 **Types:**
@@ -37,17 +39,35 @@ All changes must be committed as **small, logical units**. Each commit should:
 - `docs`: Documentation changes
 - `chore`: Maintenance tasks, dependency updates
 - `config`: Configuration changes
+- `perf`: Performance improvements
+- `ci`: CI/CD changes
+
+**Scope (optional):** Module or area affected (e.g., `feat(alloc):`, `fix(bridge):`)
 
 **Examples:**
 
 ```
 feat: add volatility force calculation using Parkinson estimator
 
-fix: correct tick alignment in V4 position minting
+fix(bridge): correct cross-chain balance delta calculation
 
 test: add unit tests for water-filling allocation algorithm
 
 docs: document BTR force model in ARCHITECTURE.md
+```
+
+**With issue reference:**
+```
+fix: handle empty pool snapshot array gracefully
+
+Closes #42
+```
+
+**Breaking change:**
+```
+feat!: rename allocation interface to match V4 standard
+
+BREAKING CHANGE: AllocationEntry.poolId renamed to AllocationEntry.pool
 ```
 
 ### Logical Unit Examples
@@ -70,9 +90,41 @@ docs: document BTR force model in ARCHITECTURE.md
 2. Run `bun test` to ensure all tests pass
 3. Review your diff with `git diff --staged`
 
+## Branch Naming
+
+Use descriptive branch names with prefixes:
+
+```
+<type>/<short-description>
+<type>/<issue-number>-<short-description>
+```
+
+**Prefixes:**
+| Prefix | Purpose | Example |
+|--------|---------|---------|
+| `feat/` | New features | `feat/v4-position-support` |
+| `fix/` | Bug fixes | `fix/bridge-balance-delta` |
+| `refactor/` | Code restructuring | `refactor/extract-allocator` |
+| `test/` | Test additions | `test/integration-pools` |
+| `docs/` | Documentation | `docs/api-endpoints` |
+| `chore/` | Maintenance | `chore/update-deps` |
+
+**Rules:**
+- Use kebab-case (lowercase with hyphens)
+- Keep descriptions short but meaningful (2-4 words)
+- Include issue number when applicable: `fix/42-empty-snapshot`
+
+**Examples:**
+```
+feat/v4-position-minting
+fix/bridge-cross-chain-delta
+test/unit-allocation-waterfill
+refactor/123-extract-force-calculation
+```
+
 ## Pull Requests
 
-1. Create a feature branch from `main`
+1. Create a feature branch from `main` using the naming convention above
 2. Make atomic commits following the guidelines above
 3. Ensure all CI checks pass
 4. Request review from maintainers
