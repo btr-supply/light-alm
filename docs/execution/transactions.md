@@ -53,7 +53,7 @@ Gas price strategy is delegated to viem's chain-aware transport -- EIP-1559 chai
 
 Before any position or swap operation, the required token approvals are checked and issued:
 
-- **V3/Algebra/Aerodrome**: approve to the NonfungiblePositionManager
+- **V3/Algebra**: approve to the NonfungiblePositionManager
 - **V4**: approve to the Permit2 contract, then Permit2 allowance to the PositionManager
 - **LB**: approve to the LB Router
 - **Swaps**: approve to the Li.Fi Diamond or Jumper contract

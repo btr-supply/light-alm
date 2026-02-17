@@ -22,7 +22,7 @@ Each pool entry contains:
 
 ### ID Formats
 
-- **V3 / Algebra / Aerodrome / LB**: standard Ethereum address (42 characters, `0x` + 40 hex)
+- **V3 / Algebra / LB**: standard Ethereum address (42 characters, `0x` + 40 hex)
 - **V4**: bytes32 hash (66 characters, `0x` + 64 hex) -- encodes the pool's `(currency0, currency1, fee, tickSpacing, hooks)` tuple
 
 Example:
@@ -33,15 +33,15 @@ V4:  0xd49b419ced7700b88756e5c576f7a6fc165d8b4b140970ec4e6f468784c8385c
 
 ## Pool Distribution
 
-| Chain | Pool Count | DEXs |
-|-------|-----------|------|
-| Ethereum (1) | 6 | Uniswap V3, Uniswap V4, PCS V3 |
-| BSC (56) | 9 | PancakeSwap V3, Uniswap V3, PCS V4, Uniswap V4 |
-| Arbitrum (42161) | 5 | Uniswap V3, Camelot V3, Uniswap V4 |
-| Base (8453) | 2 | Aerodrome V3, PCS V3 |
-| HyperEVM (999) | 3 | Project-X V3, Ramses V3, Hybra V4 |
-| Avalanche (43114) | 9 | Pangolin V3, Trader Joe V2/V2.1/V2.2, Uniswap V3, Blackhole V3, Pharaoh V3, Uniswap V4 |
-| Polygon (137) | 7 | Uniswap V4, Uniswap V3, QuickSwap V3 |
+| Chain | ID | DEXs |
+|-------|---:|------|
+| Ethereum | 1 | Uniswap V3/V4, PancakeSwap V3 |
+| BNB Chain | 56 | Uniswap V3/V4, PancakeSwap V3/V4 |
+| Polygon | 137 | Uniswap V3/V4, QuickSwap V3 |
+| Base | 8453 | Uniswap V3/V4, Aerodrome V3, PancakeSwap V3 |
+| Arbitrum | 42161 | Uniswap V3/V4, PancakeSwap V3, Camelot V3, Ramses V3 |
+| Avalanche | 43114 | Uniswap V3, Pangolin V3, Blackhole V3, Pharaoh V3, Joe V2/V2.1/V2.2 |
+| HyperEVM | 999 | Ramses V3, Project X V3, Hybra V4 |
 
 ## Pool Operability
 

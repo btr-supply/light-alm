@@ -1,6 +1,6 @@
 # DEX Registry
 
-Centralized registry of 16 DEX identifiers across 6 families (V3, Algebra, Aerodrome, V4, PCS V4, LB), with ABI fragments and Position Manager addresses.
+Centralized registry of 16 DEX identifiers across 5 families (V3, Algebra, V4, PCS V4, LB), with ABI fragments and Position Manager addresses.
 
 ## DEX Families
 
@@ -18,6 +18,7 @@ Standard NonfungiblePositionManager interface with `slot0()` for price, tick-ali
 | `ramses` | Ramses | Arbitrum | ve(3,3) model with V3 positions |
 | `camelot` | Camelot | Arbitrum | Custom fee tiers |
 | `quickswap` | QuickSwap | Polygon | V3 deployment |
+| `aerodrome` | Aerodrome | Base | V3 fork with minor `slot0` ABI diff, ve(3,3) mechanics |
 
 ### Algebra Family
 
@@ -26,14 +27,6 @@ Uses `globalState()` instead of `slot0()` for reading pool price and tick. Other
 | DEX ID | Name | Chains | Notes |
 |--------|------|--------|-------|
 | `blackhole` | Blackhole V3 | Avalanche | Algebra Integral, NOT Uniswap V3 despite the "V3" name |
-
-### Aerodrome Family
-
-Concentrated liquidity with vote-escrow mechanics. Compatible interface with V3 for position management but separate factory and router contracts.
-
-| DEX ID | Name | Chains | Notes |
-|--------|------|--------|-------|
-| `aerodrome` | Aerodrome | Base | ve(3,3) on Base |
 
 ### V4 Family (Singleton PositionManager)
 

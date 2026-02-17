@@ -1,6 +1,6 @@
 # DEX Position Adapters
 
-Unified interface for minting and burning LP positions across 5 DEX families and 16 DEX IDs.
+Unified interface for minting and burning LP positions across 4 DEX families and 16 DEX IDs.
 
 ## Architecture
 
@@ -13,18 +13,16 @@ graph TD
     A[mintPosition / burnPosition] --> B{getDexFamily}
     B -->|V3| C[V3 adapter - positions.ts]
     B -->|Algebra| D[Algebra adapter - positions.ts]
-    B -->|Aerodrome| E[Aerodrome adapter - positions.ts]
-    B -->|V4 / PCS_V4| F[V4 adapter - positions-v4.ts]
-    B -->|LB| G[LB adapter - positions-lb.ts]
+    B -->|V4 / PCS_V4| E[V4 adapter - positions-v4.ts]
+    B -->|LB| F[LB adapter - positions-lb.ts]
 ```
 
 ## DEX Families
 
 | Family | DEXs | Token Standard | ID Format |
 |--------|------|---------------|-----------|
-| **V3** | Uniswap V3, PancakeSwap V3, Pangolin, Pharaoh, Ramses, Camelot, QuickSwap, Project-X | ERC-721 | uint256 tokenId |
+| **V3** | Uniswap V3, PancakeSwap V3, Pangolin, Pharaoh, Ramses, Camelot, QuickSwap, Project-X, Aerodrome | ERC-721 | uint256 tokenId |
 | **Algebra** | Blackhole (Algebra Integral) | ERC-721 | uint256 tokenId |
-| **Aerodrome** | Aerodrome | ERC-721 | uint256 tokenId |
 | **V4** | Uniswap V4, PCS V4 | ERC-721 | uint256 tokenId (pool is bytes32) |
 | **LB** | Trader Joe V2/V2.1/V2.2 | ERC-1155 | `lb:{lowerBin}:{upperBin}` |
 

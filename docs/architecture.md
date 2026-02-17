@@ -62,7 +62,7 @@ graph LR
 | `src/config/` | Static configuration: chains, DEXes, pools, pairs, tokens, params |
 | `src/data/` | Data ingestion: OHLC (ccxt), GeckoTerminal, DragonflyStore, O2 queries |
 | `src/strategy/` | Signal computation: forces, range, optimizer, allocation, decision |
-| `src/execution/` | On-chain operations: V3/Algebra/Aerodrome, V4, LB position adapters |
+| `src/execution/` | On-chain operations: V3/Algebra, V4, LB position adapters |
 | `src/infra/` | Infrastructure: Redis client, OpenObserve logger, structured logger |
 | `src/adapters/` | Pool state queries (on-chain reads via viem) |
 
