@@ -13,7 +13,7 @@
     |   - Sole custodian of funds                     |
     |   - Deterministic CREATE2 address               |
     |                                                 |
-    |   BTRPolicyModule (Safe Module)                 |
+    |   BTRPolicyModule (Safe Module, one per Safe)   |
     |   - Session key + epoch gating                  |
     |   - Spend caps (per token, per epoch)           |
     |   - Target allowlists                           |
@@ -41,22 +41,22 @@
 | Automation | Direct signing | UserOps + Bundler + Paymaster | Module bypasses sig requirement |
 | Spend limits | None | Custom validation logic | Module enforces per-epoch caps |
 | Target allowlist | None | Custom validation logic | Module restricts `to` addresses |
-| Calldata verification | None | Custom validation logic | Module + adapter `staticcall` |
-| Multi-chain | Same PK everywhere | Need EntryPoint per chain | CREATE2 same Safe address everywhere |
-| Gas sponsoring | Bot pays | Paymaster pays | Module can use Paymaster (optional) |
-| Upgrade path | Stuck | 7579 modules | Add 7579 adapter later |
+| Calldata verification | None | Custom validation logic | Module + adapter verification (compiled as `staticcall` for `pure`/`view` targets) |
+| Multi-chain | Same PK everywhere | Need EntryPoint per chain | CREATE2 deterministic Safe address (same inputs = same address; requires same factory + singleton on each chain) |
+| Gas sponsoring | Bot pays | Paymaster pays | Keeper pays directly; add `Safe4337Module` later for Paymaster support via UserOps |
+| Upgrade path | Stuck | 7579 modules | Add `safe7579` adapter later |
 | Recovery | Lost PK = lost funds | Social recovery module | Owner rotation, timelock |
 
-**Bottom line**: Safe modules give you the automation of ERC-4337 without the bundler/paymaster complexity. You can add 4337 compatibility later via Safe's `Safe4337Module` if you need UserOps or gas sponsoring.
+**Bottom line**: Safe modules give you the automation of ERC-4337 without the bundler/paymaster complexity. You can add 4337 compatibility later via Safe's `Safe4337Module` (requires Safe v1.4.1+) if you need UserOps or gas sponsoring.
 
 ### ERC-7579 Opportunity
 
-Safe has a `safe7579` adapter that makes any Safe a fully ERC-7579-compliant modular account. This means:
+Safe has a `safe7579` adapter (by Rhinestone + Safe) that makes any Safe a fully ERC-7579-compliant modular account. Once installed, it enables:
 
 - **Validators**: Session key validation (replace PK signing with scoped session keys)
-- **Executors**: Your BTRPolicyModule becomes a 7579 executor
+- **Executors**: BTRPolicyModule can be wrapped as a 7579 executor (requires adopting the 7579 module interface)
 - **Hooks**: Pre/post execution checks (e.g., balance invariants)
-- **Fallback handlers**: Handle `outputFilled()` for Li.Fi intents
+- **Fallback handlers**: Extend the Safe with custom interfaces (e.g., intent delivery)
 
 For v1, a plain Safe Module is sufficient. The 7579 adapter is the upgrade path for v2 when you want standardized session keys and hook-based invariant checking.
 
@@ -91,14 +91,16 @@ interface IBridgeSwapVerifierAdapter {
 
 contract BTRPolicyModule {
     // --- Storage ---
-    ISafe public immutable safe;
+    ISafe public immutable safe;        // One module instance per Safe
     address public keeper;              // Authorized automation EOA
     uint64 public epochDuration;        // e.g., 900 (15 min)
     uint64 public windowDuration;       // e.g., 60 (1 min execution window)
 
-    // Spend caps: token => remaining allowance this epoch
+    // Spend caps: token => max allowance per epoch
     mapping(address => uint256) public epochCap;
-    mapping(address => uint256) public epochSpent;
+    // Epoch-indexed spend tracking: epochIndex => token => spent
+    // Uses epoch index instead of resetting a mapping (gas-efficient)
+    mapping(uint256 => mapping(address => uint256)) public epochSpent;
     uint64 public epochStart;
 
     // Adapter registry: adapterId => adapter contract
@@ -114,6 +116,7 @@ contract BTRPolicyModule {
     }
 
     modifier withinWindow() {
+        require(epochDuration > 0, "epoch duration not set");
         uint64 elapsed = uint64(block.timestamp) - epochStart;
         uint64 inEpoch = elapsed % epochDuration;
         require(inEpoch < windowDuration, "outside execution window");
@@ -123,13 +126,13 @@ contract BTRPolicyModule {
     // --- Core Execution ---
     function execute(
         bytes32 adapterId,
-        address target,
+        address to,
         bytes calldata data,
         uint256 value,
         address expectedReceiver,
         uint256 expectedDstChainId
     ) external onlyKeeper withinWindow {
-        require(allowedTargets[target], "target not allowed");
+        require(allowedTargets[to], "target not allowed");
 
         // Verify calldata via adapter
         if (adapterId != bytes32(0)) {
@@ -138,7 +141,7 @@ contract BTRPolicyModule {
 
             IBridgeSwapVerifierAdapter.VerifyResult memory res =
                 adapter.verify(IBridgeSwapVerifierAdapter.VerifyRequest({
-                    aggregator: target,
+                    aggregator: to,
                     data: data,
                     value: value,
                     expectedReceiver: expectedReceiver,
@@ -158,22 +161,22 @@ contract BTRPolicyModule {
 
         // Execute from Safe
         bool success = safe.execTransactionFromModule(
-            target, value, data, 0 // Enum.Operation.Call
+            to, value, data, 0 // Enum.Operation.Call
         );
         require(success, "safe execution failed");
     }
 
+    function _currentEpochIndex() internal view returns (uint256) {
+        if (epochDuration == 0) return 0;
+        return (block.timestamp - epochStart) / epochDuration;
+    }
+
     function _checkAndDebit(address token, uint256 amount) internal {
-        // Reset epoch if needed
-        if (block.timestamp >= epochStart + epochDuration) {
-            epochStart = uint64(block.timestamp);
-            // Reset all spent counters (gas-intensive for many tokens;
-            // in practice, only a few tokens per vault)
-        }
+        uint256 idx = _currentEpochIndex();
         uint256 cap = epochCap[token];
-        uint256 spent = epochSpent[token];
+        uint256 spent = epochSpent[idx][token];
         require(spent + amount <= cap, "epoch cap exceeded");
-        epochSpent[token] = spent + amount;
+        epochSpent[idx][token] = spent + amount;
     }
 }
 ```
@@ -192,7 +195,7 @@ interface ICalldataVerificationFacet {
             string memory bridge,
             address sendingAssetId,
             address receiver,
-            uint256 minAmount,
+            uint256 amount,
             uint256 destinationChainId,
             bool hasSourceSwaps,
             bool hasDestinationCall
@@ -200,23 +203,33 @@ interface ICalldataVerificationFacet {
 }
 
 contract LiFiVerifierAdapter is IBridgeSwapVerifierAdapter {
-    // Li.Fi Diamond -- same address on all chains
-    address public constant LIFI_DIAMOND =
-        0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE;
+    // Li.Fi Diamond — canonical address on most EVM chains.
+    // Exceptions: zkSync, Linea, Taiko, Metis use different addresses.
+    // See https://docs.li.fi/smart-contracts/deployments
+    address public immutable lifiDiamond;
 
+    constructor(address _lifiDiamond) {
+        lifiDiamond = _lifiDiamond;
+    }
+
+    // NOTE: `view` (not `pure`) because it makes an external call to the Diamond,
+    // even though extractMainParameters itself is pure. Solidity requires `view`
+    // for any function that performs an external call.
     function verify(VerifyRequest calldata req)
-        external pure override returns (VerifyResult memory)
+        external view override returns (VerifyResult memory)
     {
-        // staticcall LiFi's own verification facet
+        // Verify the target is the canonical Li.Fi Diamond
+        require(req.aggregator == lifiDiamond, "not LiFi Diamond");
+
         (
             ,                        // bridge name (unused)
             address sendingAsset,
             address receiver,
-            uint256 amount,
+            uint256 amount,          // pre-swap input amount when hasSourceSwaps
             uint256 dstChainId,
             ,                        // hasSourceSwaps (unused)
             bool hasDestCall
-        ) = ICalldataVerificationFacet(req.aggregator)
+        ) = ICalldataVerificationFacet(lifiDiamond)
                 .extractMainParameters(req.data);
 
         return VerifyResult({
@@ -233,12 +246,16 @@ contract LiFiVerifierAdapter is IBridgeSwapVerifierAdapter {
 #### UniV3VerifierAdapter (for position manager calls)
 
 ```solidity
+// NOTE: `view` not `pure` — reads no state but Solidity requires `view`
+// for consistency with the IBridgeSwapVerifierAdapter interface.
+// This adapter does not make external calls, so `pure` would technically
+// work if the interface allowed it, but the interface declares `view`.
 contract UniV3VerifierAdapter is IBridgeSwapVerifierAdapter {
     // Decode mint/decreaseLiquidity/collect calldata
     // Verify recipient matches expected receiver
     // Return token0 as asset, amount0Desired as amount
     function verify(VerifyRequest calldata req)
-        external pure override returns (VerifyResult memory)
+        external view override returns (VerifyResult memory)
     {
         bytes4 selector = bytes4(req.data[:4]);
 
@@ -269,40 +286,49 @@ contract UniV3VerifierAdapter is IBridgeSwapVerifierAdapter {
 // src/config/vaults.ts
 
 export interface VaultConfig {
-  safe: `0x${string}`;           // Safe address (same via CREATE2)
+  safe: `0x${string}`;           // Safe address (deterministic via CREATE2)
   module: `0x${string}`;         // BTRPolicyModule address
   adapters: {
-    lifi: `0x${string}`;         // LiFiVerifierAdapter (or zero if using staticcall)
+    lifi: `0x${string}`;         // LiFiVerifierAdapter
     univ3: `0x${string}`;        // UniV3VerifierAdapter
   };
-  allowedTargets: `0x${string}`[];  // [LiFi Diamond, UniV3 PM, ...]
+  lifiDiamond: `0x${string}`;    // Li.Fi Diamond (varies by chain)
+  allowedTargets: `0x${string}`[];
 }
 
+// Li.Fi Diamond addresses per chain.
+// Most chains use 0x1231..., but some differ.
+// See https://docs.li.fi/smart-contracts/deployments
 export const VAULT_REGISTRY: Record<number, VaultConfig> = {
   1: {
     safe: "0x...",               // Deterministic CREATE2 address
     module: "0x...",
     adapters: {
-      lifi: "0x0000000000000000000000000000000000000000", // Use staticcall
+      lifi: "0x...",             // Deployed LiFiVerifierAdapter
       univ3: "0x...",
     },
+    lifiDiamond: "0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE",
     allowedTargets: [
       "0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE", // LiFi Diamond
-      "0xC36442b4a4522E871399CD717aBDD847Ab11FE88", // UniV3 NonfungiblePositionManager
+      "0xC36442b4a4522E871399CD717aBDD847Ab11FE88", // UniV3 NPM (mainnet)
     ],
   },
   // ... same structure per chain
+  // NOTE: NPM address differs on some L2s (e.g., zkSync)
 };
 ```
 
 ### BTRIntentInbox (Optional)
 
-Only needed if you want to support Li.Fi intent deliveries where the solver calls `outputFilled()` on delivery:
+Only needed if you want to support Li.Fi intent deliveries where the solver calls a callback on delivery. The exact interface depends on which intent standard is used (Li.Fi's own routing, ERC-7683 `IDestinationSettler`, Across-style, etc.). The following is a minimal sketch for Li.Fi's `outputFilled` pattern:
 
 ```solidity
 contract BTRIntentInbox {
     address public immutable safe;
 
+    // NOTE: Validate this signature against the specific Li.Fi intent
+    // standard being targeted. ERC-7683 uses a different interface:
+    // fill(bytes32 orderId, bytes originData, bytes fillerData)
     function outputFilled(
         bytes32 token,
         uint256 amount,
@@ -332,15 +358,15 @@ For v1, Pattern A is recommended. The keeper watches the `IntentFilled` event an
 | SDK | `@btr-supply/swap` (wraps 15+ aggregators) | Direct Li.Fi REST API via `fetch()` |
 | Same-chain swaps | Multi-aggregator routing | Li.Fi quote (aggregates DEXs) |
 | Cross-chain | Multi-aggregator routing | Li.Fi classic routes + intents |
-| Calldata verification | None | `extractMainParameters` staticcall |
+| Calldata verification | None | `extractMainParameters` on-chain verification |
 | Receiver safety | Trust SDK output | On-chain verification: `receiver == vault` |
 
 ### Why Li.Fi Only
 
 1. **Simplified maintenance**: One aggregator API vs 15+ adapters
-2. **On-chain verification**: CalldataVerificationFacet is unique to Li.Fi -- no other aggregator provides this
+2. **On-chain verification**: Li.Fi provides `CalldataVerificationFacet` with an on-chain calldata parser for its own routes — enabling pre-execution verification of receiver, chain, and amounts
 3. **Receiver verification**: `extractMainParameters` lets you verify `receiver == vault` on-chain before execution
-4. **Intent support**: Li.Fi intents often beat atomic DEX swaps by 10-50bps on popular routes
+4. **Intent support**: Li.Fi routes intents transparently when solver-based routes are optimal, potentially improving execution on popular routes
 5. **Deterministic receiver**: Since vaults are deterministically deployed (same CREATE2 address per chain), `receiver == spender` for monochain and `receiver == destinationVault` for cross-chain
 
 ### New `src/execution/swap.ts`
@@ -349,9 +375,9 @@ For v1, Pattern A is recommended. The keeper watches the `IntentFilled` event an
 import type { ChainId } from "../types";
 import { getPublicClient, sendAndWait, getAccount, type TxResult } from "./tx";
 import { log, retry } from "../utils";
+import { VAULT_REGISTRY } from "../config/vaults";
 
 const LIFI_API = "https://li.quest/v1";
-const LIFI_DIAMOND = "0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE" as const;
 
 // CalldataVerificationFacet ABI (for on-chain verification)
 const EXTRACT_MAIN_PARAMS_ABI = [{
@@ -435,6 +461,10 @@ export async function getLiFiQuote(params: LiFiQuoteParams): Promise<LiFiQuote> 
 /**
  * Verify Li.Fi calldata on-chain using CalldataVerificationFacet.
  * Ensures receiver, destination chain, and no destination calls.
+ *
+ * Note: `extractMainParameters` is `pure`, so viem compiles this as
+ * eth_call (STATICCALL). The `amount` return value is the sending amount
+ * (pre-swap input when hasSourceSwaps, otherwise bridgeData.minAmount).
  */
 export async function verifyLiFiCalldata(
   chainId: ChainId,
@@ -443,9 +473,11 @@ export async function verifyLiFiCalldata(
   expectedDstChain: number,
 ): Promise<void> {
   const pub = getPublicClient(chainId);
+  const vault = VAULT_REGISTRY[chainId];
+  if (!vault) throw new Error(`No vault config for chain ${chainId}`);
 
-  const [, , receiver, , dstChain, , hasDestCall] = await pub.readContract({ // pure function — safe as staticcall
-    address: LIFI_DIAMOND,
+  const [, , receiver, , dstChain, , hasDestCall] = await pub.readContract({
+    address: vault.lifiDiamond,
     abi: EXTRACT_MAIN_PARAMS_ABI,
     functionName: "extractMainParameters",
     args: [calldata],
@@ -559,7 +591,7 @@ When migrating to Safe vaults, the `sendAndWait` path changes:
 ```typescript
 // src/execution/module.ts
 
-import { encodeFunctionData } from "viem";
+import { encodeFunctionData, toHex } from "viem";
 import { getPublicClient, getWalletClient, getAccount } from "./tx";
 import type { ChainId } from "../types";
 import { VAULT_REGISTRY } from "../config/vaults";
@@ -571,7 +603,7 @@ const MODULE_ABI = [{
   stateMutability: "nonpayable",
   inputs: [
     { name: "adapterId", type: "bytes32" },
-    { name: "target", type: "address" },
+    { name: "to", type: "address" },
     { name: "data", type: "bytes" },
     { name: "value", type: "uint256" },
     { name: "expectedReceiver", type: "address" },
@@ -579,6 +611,14 @@ const MODULE_ABI = [{
   ],
   outputs: [],
 }] as const;
+
+// Adapter IDs as right-padded bytes32 (must match Solidity-side registration).
+// Using raw UTF-8 bytes right-padded with zeros — NOT keccak256 hashed.
+const ADAPTER_IDS: Record<string, `0x${string}`> = {
+  lifi: toHex("lifi", { size: 32 }),
+  univ3: toHex("univ3", { size: 32 }),
+  erc20: toHex("erc20", { size: 32 }),
+};
 
 /**
  * Execute an action through the BTRPolicyModule on a Safe vault.
@@ -599,7 +639,8 @@ export async function executeViaModule(
   const vault = VAULT_REGISTRY[chainId];
   if (!vault) throw new Error(`No vault config for chain ${chainId}`);
 
-  const adapterIdBytes = `0x${Buffer.from(action.adapterId.padEnd(32, "\0")).toString("hex")}` as `0x${string}`;
+  const adapterIdBytes = ADAPTER_IDS[action.adapterId];
+  if (!adapterIdBytes) throw new Error(`Unknown adapter: ${action.adapterId}`);
 
   const calldata = encodeFunctionData({
     abi: MODULE_ABI,
@@ -649,14 +690,14 @@ For v1, support intents passively:
 ## Part 3: Implementation Order
 
 ### Phase 1: Safe Infrastructure (Contracts)
-1. Deploy Safe per pair per chain (using Safe Proxy Factory for CREATE2)
-2. Deploy BTRPolicyModule per chain
-3. Deploy LiFiVerifierAdapter per chain (or use `staticcall` to Diamond directly)
+1. Deploy Safe per pair per chain (using Safe Proxy Factory + CREATE2)
+2. Deploy BTRPolicyModule per Safe (one module instance per Safe, `safe` is `immutable`)
+3. Deploy LiFiVerifierAdapter per chain (constructor takes chain-specific Diamond address)
 4. Enable module on each Safe, configure keeper address + caps + allowlist
 5. Transfer existing positions/funds from EOA to Safe
 
 ### Phase 2: Li.Fi Migration (TypeScript)
-1. Add `src/config/vaults.ts` (vault registry)
+1. Add `src/config/vaults.ts` (vault registry with per-chain Li.Fi Diamond addresses)
 2. Rewrite `src/execution/swap.ts` (Li.Fi direct API + on-chain verification)
 3. Add `src/execution/module.ts` (module-aware execution)
 4. Update `src/execution/positions.ts` (mint/burn through module, recipient = Safe)
@@ -664,7 +705,7 @@ For v1, support intents passively:
 
 ### Phase 3: Intent Support
 1. Add cross-chain status polling (Li.Fi `/status` endpoint)
-2. Optionally deploy BTRIntentInbox for delivery callbacks
+2. Optionally deploy BTRIntentInbox for delivery callbacks (validate interface against target intent standard)
 
 ### Phase 4: Testing & Verification
 1. Unit tests for Li.Fi verification logic
@@ -679,7 +720,8 @@ For v1, support intents passively:
 ### Per Chain Setup
 
 - [ ] Deploy Safe via Safe Proxy Factory (CREATE2 for deterministic address)
-- [ ] Deploy BTRPolicyModule
+- [ ] Deploy BTRPolicyModule (one per Safe, `immutable safe`)
+- [ ] Deploy LiFiVerifierAdapter (pass chain-specific Li.Fi Diamond address to constructor)
 - [ ] Deploy UniV3VerifierAdapter
 - [ ] Configure module on Safe:
   - [ ] Set keeper address (bot's session key)
@@ -689,6 +731,7 @@ For v1, support intents passively:
   - [ ] Add allowed targets: Li.Fi Diamond, position managers
   - [ ] Register adapters: lifi, univ3, erc20
 - [ ] Verify Safe addresses match across all chains (CREATE2)
+- [ ] Verify Li.Fi Diamond address is correct for this chain (differs on zkSync, Linea, Taiko, Metis)
 - [ ] Fund Safe with initial token balances
 - [ ] Test one full cycle: quote -> verify -> mint -> burn
 
@@ -712,7 +755,8 @@ MODULE_BASE=0x...
 
 1. **receiver == vault**: Every Li.Fi calldata must have `receiver == Safe address` on the correct chain
 2. **No destination calls**: `hasDestinationCall` must be `false` (prevents arbitrary code execution post-bridge)
-3. **Spend caps**: Module enforces max spend per token per epoch
+3. **Spend caps**: Module enforces max spend per token per epoch (epoch-indexed tracking, no reset needed)
 4. **Target allowlist**: Module only allows calls to registered contract addresses
-5. **Window gating**: Execution only possible during the first N seconds of each epoch
+5. **Window gating**: Execution only possible during the first N seconds of each epoch (requires `epochDuration > 0`)
 6. **Owner separation**: Safe owners (multi-sig cold keys) != keeper (hot session key)
+7. **Diamond address validation**: LiFiVerifierAdapter validates `req.aggregator == lifiDiamond` before calling `extractMainParameters`
