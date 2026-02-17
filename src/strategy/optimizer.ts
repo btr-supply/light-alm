@@ -440,7 +440,7 @@ export function optimize(
   return { params, fitness: result.fitness, evals: result.evals };
 }
 
-/** Set warm-start state from persisted data (e.g. loaded from SQLite on startup) */
+/** Set warm-start state from persisted data (e.g. loaded from DragonflyDB on startup) */
 export function setWarmStart(pairId: string, vec: number[]) {
   prevBestByPair.set(pairId, vec);
 }

@@ -76,12 +76,12 @@
 | Term | Definition |
 |------|-----------|
 | **cross-chain rebalancing** | Moving token balances across chains via Li.Fi/Jumper bridge aggregators. Triggered during PRA when the target allocation spans multiple chains. See [swap](execution/swap.md). |
-| **epoch snapshot** | Per-cycle summary metrics (PnL, positions, rebalance count, regime) persisted to SQLite for trailing analysis. See [store](data/store.md). |
+| **epoch snapshot** | Per-cycle summary metrics (PnL, positions, rebalance count, regime) ingested to OpenObserve for trailing analysis. See [observability](infrastructure/observability.md). |
 | **gas buffer** | 120% multiplier on `eth_estimateGas` to prevent out-of-gas reverts from state changes between estimation and mining. See [transactions](execution/transactions.md). |
 | **regime suppression** | Circuit breaker disabling the optimizer for 4 epochs after detecting volatility spikes, price displacement, or volume anomalies. See [optimizer](strategy/optimizer.md). |
 | **slippage** | Price difference between expected and actual execution. Default tolerance: 50 BPS (0.5%). Applied to `amount0Min`/`amount1Min` in mints and swaps. See [transactions](execution/transactions.md). |
 | **token ratio rebalancing** | Adjusting per-chain token0/token1 balances toward the target ratio (typically 50/50) via same-chain swaps before minting. See [swap](execution/swap.md). |
-| **warm-start** | Reusing the previous epoch's best optimizer vector as the initial simplex point. Persisted in the `optimizer_state` SQLite table. See [optimizer](strategy/optimizer.md). |
+| **warm-start** | Reusing the previous epoch's best optimizer vector as the initial simplex point. Persisted in DragonflyDB. See [optimizer](strategy/optimizer.md). |
 | **water-fill** | Concave allocation optimizer equalizing marginal APR across pools via bisection. See [allocation](strategy/allocation.md). |
 
 ## Infrastructure

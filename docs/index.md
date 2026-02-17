@@ -31,7 +31,7 @@
 | Page | Description |
 |------|-------------|
 | [Multi-Source OHLC](data/ohlc.md) | Weighted M1 candles via ccxt, backfill, aggregation |
-| [SQLite Schema](data/store.md) | 8 tables, WAL mode, retention policy |
+| [Observability](infrastructure/observability.md) | 9 O2 streams, buffered ingestion, SQL queries |
 | [GeckoTerminal](data/gecko.md) | Pool snapshots, interval volume diffing |
 
 ## Infrastructure

@@ -10,7 +10,7 @@ A single EOA (Externally Owned Account) per asset pair controls all positions fo
 2. **Compute** -- calculate 3-force signals, run pool analysis, optimize range parameters, allocate capital via water-fill
 3. **Decide** -- compare current positions against optimal allocation; choose PRA, RS, or HOLD
 4. **Execute** -- burn outdated positions, swap/bridge tokens if needed, mint new positions
-5. **Log** -- persist results to SQLite, publish state to DragonflyDB, ingest telemetry to OpenObserve
+5. **Log** -- ingest results to OpenObserve, publish state to DragonflyDB
 
 ## Supported Chains
 

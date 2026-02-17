@@ -74,10 +74,10 @@ The initial simplex is built from the warm-start point (previous epoch's best so
 
 ## Warm-Start
 
-The best parameter vector is cached per pair ID (`Map<string, number[]>`) and persisted to SQLite. On worker restart, the warm-start is loaded from the database:
+The best parameter vector is cached per pair ID (`Map<string, number[]>`) and persisted to DragonflyDB. On worker restart, the warm-start is loaded:
 
 ```typescript
-const saved = getOptimizerState(db, pair.id);
+const saved = await store.getOptimizerState();
 if (saved) setWarmStart(pair.id, saved.vec);
 ```
 
@@ -114,5 +114,5 @@ Post-optimization safety checks that revert to default parameters:
 - [3-Force Model](forces.md) -- the signals that feed the fitness simulation
 - [Range Computation](range.md) -- how optimized parameters control range width
 - [Decision Engine](decision.md) -- how `rsThreshold` from the optimizer affects RS decisions
-- [SQLite Schema](../data/store.md) -- `optimizer_state` table for warm-start persistence
+- [DragonflyDB Store](../data/store-dragonfly.md) -- optimizer warm-start persistence
 - [Glossary](../glossary.md) -- LVR, Nelder-Mead, regime detection definitions

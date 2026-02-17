@@ -13,20 +13,11 @@ HTTP API for querying system state, pair data, and orchestrator management.
 
 The API runs in one of two modes depending on whether an orchestrator is present:
 
-### Orchestrated Mode
+The API reads worker state from **DragonflyDB** and historical data from **OpenObserve**.
 
-Used when the orchestrator is running. The API reads worker state from **DragonflyDB** and opens **read-only SQLite** connections to worker databases.
-
-- Worker state: fetched from `btr:worker:{pairId}:state` in Redis
-- Historical data: read from `.data/{pairId}.db` in read-only mode
-- Cache: 5-minute eviction to reduce SQLite file descriptor pressure
-
-### Legacy Mode
-
-Used for single-pair standalone runs (no orchestrator). The API reads from an **in-memory registry** populated by the worker running in the same process.
-
-- State: direct reference to the in-memory `PairRuntime`
-- Database: shared SQLite connection with the worker
+- Worker state: fetched from `btr:worker:{pairId}:state` in DragonflyDB
+- Historical data: queried from OpenObserve via SQL search API
+- Positions: read from DragonflyDB HASH (`btr:pair:{pairId}:positions`)
 
 ## Endpoints
 
@@ -159,5 +150,5 @@ Consumers should parse these as BigInt or appropriate arbitrary-precision types.
 ## See Also
 
 - [Process Orchestration](./orchestrator.md) -- worker state and DragonflyDB keys
-- [SQLite Schema](../data/store.md) -- database tables served by the API
+- [Observability](./observability.md) -- O2 streams queried by the API
 - [Observability](./observability.md) -- API request logging

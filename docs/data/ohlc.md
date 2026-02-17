@@ -4,7 +4,7 @@ Aggregated M1 candle data from multiple CEX sources via ccxt REST, used for stra
 
 ## Architecture
 
-Candle data is fetched from centralized exchanges using **ccxt REST** (not WebSockets). Since the system operates on 15-minute strategy cycles, real-time streaming is unnecessary. Candles are fetched every 15 minutes and stored in SQLite.
+Candle data is fetched from centralized exchanges using **ccxt REST** (not WebSockets). Since the system operates on 15-minute strategy cycles, real-time streaming is unnecessary. Candles are fetched every 15 minutes, kept in-memory, and ingested to OpenObserve.
 
 ## Source Configuration
 
@@ -32,10 +32,10 @@ Weights are used for weighted-average price computation when aggregating across 
 
 On startup, the worker performs a **30-day backfill** for each configured source:
 
-1. Query SQLite for the latest stored candle timestamp
+1. Query DragonflyDB for the latest stored candle cursor timestamp
 2. If the gap exceeds 30 days, start from 30 days ago
 3. Fetch in batches of 500 candles, paginating by timestamp
-4. Insert with `ON CONFLICT REPLACE` to handle overlapping data
+4. Append to in-memory buffer and ingest to OpenObserve
 5. Continue until the current time is reached
 
 Backfill runs sequentially per source to respect exchange rate limits.
@@ -65,15 +65,7 @@ Partial periods (incomplete candle count) are still aggregated but flagged.
 
 ## Storage
 
-M1 candles are stored in the `m1_candles` table:
-
-```sql
-(ts INTEGER PRIMARY KEY, o REAL, h REAL, l REAL, c REAL, v REAL)
-```
-
-Primary key is `ts` (Unix timestamp ms). Duplicate inserts update the existing row via `ON CONFLICT REPLACE`.
-
-Data retention is **90 days** -- candles older than 90 days are pruned automatically on worker startup.
+M1 candles are held in an in-memory buffer (up to 30 days) and ingested to the `candles` OpenObserve stream. The candle cursor (latest timestamp) is persisted to DragonflyDB (`btr:pair:{pairId}:candle_cursor`) for resuming backfill after worker restart.
 
 ## Error Handling
 
@@ -85,7 +77,7 @@ Data retention is **90 days** -- candles older than 90 days are pruned automatic
 ## See Also
 
 - [3-Force Model](../strategy/forces.md) -- consumes aggregated candle data for force computation
-- [SQLite Schema](./store.md) -- m1_candles table definition
+- [Observability](../infrastructure/observability.md) -- candles O2 stream
 - [GeckoTerminal Integration](./gecko.md) -- on-chain pool data (complementary to CEX candles)
 - [Dashboard Price Chart](../dashboard/components.md) -- M15 aggregation for display
 - [Observability](../infrastructure/observability.md) -- candle data streamed to OpenObserve

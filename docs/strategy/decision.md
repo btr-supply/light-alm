@@ -99,11 +99,9 @@ After the decision, the scheduler dispatches to the executor:
 
 ## Persistence
 
-Each decision is persisted as a `PairAllocation` record in SQLite and ingested to OpenObserve:
+Each decision is ingested to OpenObserve:
 
 ```typescript
-const pairAlloc = buildPairAllocation(decision, positions);
-savePairAllocation(db, pairAlloc);
 ingestToO2("pair_allocations", [{ pairId, decision: decision.type, ... }]);
 ```
 

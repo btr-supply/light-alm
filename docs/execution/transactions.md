@@ -114,12 +114,12 @@ Other failure modes are handled by the return value or viem's built-in errors:
 
 ## TX Logging
 
-Every transaction (successful or failed) is logged to the `tx_log` table in SQLite with: id (autoincrement), ts, decision_type, op_type, pool, chain, tx_hash, status, gas_used, gas_price, input/output token details, and allocation tracking metrics.
+Every transaction (successful or failed) is ingested to the `tx_log` OpenObserve stream with: ts, decision_type, op_type, pool, chain, tx_hash, status, gas_used, gas_price, input/output token details, and allocation tracking metrics.
 
 ## See Also
 
 - [DEX Position Adapters](./positions.md) -- mint/burn calldata encoding
 - [Token Rebalancing](./swap.md) -- swap-specific TX flow
 - [Chain Configuration](../config/chains.md) -- RPC URLs and block times
-- [SQLite Schema](../data/store.md) -- tx_log table
+- [Observability](../infrastructure/observability.md) -- tx_log O2 stream
 - [Glossary](../glossary.md) -- slippage, gas buffer, BPS definitions

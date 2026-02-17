@@ -63,14 +63,14 @@ interval_volume = current_snapshot.volume_24h / 96
 
 ## Snapshot Storage
 
-Each API response is stored in the `pool_snapshots` table with the current timestamp. The previous snapshot is retained for differencing. Snapshots older than 90 days are pruned automatically.
+Each API response is ingested to the `pool_snapshots` OpenObserve stream with the current timestamp. The previous snapshot is queried from O2 for interval volume differencing.
 
 The snapshot flow per cycle:
 
-1. Read previous snapshot from SQLite
+1. Read previous snapshot from OpenObserve
 2. Fetch current data from GeckoTerminal API
 3. Compute interval volume via diff (or fallback)
-4. Store current snapshot
+4. Ingest current snapshot to OpenObserve
 5. Return computed metrics to the pool analysis stage
 
 ## Error Handling
@@ -91,17 +91,16 @@ Partial failures are tolerated. If some pools return data and others fail, the s
 GeckoTerminal API
     │
     ▼
-pool_snapshots (SQLite)
+pool_snapshots (OpenObserve)
     │
     ├─► Pool analysis (scoring)
-    ├─► Allocation decisions
-    └─► OpenObserve (observability)
+    └─► Allocation decisions
 ```
 
 ## See Also
 
 - [Water-Fill Allocation](../strategy/allocation.md) -- consumes pool APR and TVL for capital distribution
-- [SQLite Schema](./store.md) -- pool_snapshots and pool_analysis tables
+- [Observability](../infrastructure/observability.md) -- pool_snapshots and pool_analyses O2 streams
 - [Multi-Source OHLC](./ohlc.md) -- CEX candle data (complementary on-chain data)
 - [Pool Registry](../config/pools.md) -- pool addresses used for API calls
 - [Chain Configuration](../config/chains.md) -- GeckoTerminal network slugs

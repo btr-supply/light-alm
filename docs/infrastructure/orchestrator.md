@@ -54,7 +54,7 @@ If the lock cannot be acquired (another orchestrator is running), the process ex
 
 ### Worker Spawning
 
-Workers are spawned via `Bun.spawn` with the worker entry point and pair ID as arguments. Each worker runs as an independent OS process with its own memory space and SQLite connection.
+Workers are spawned via `Bun.spawn` with the worker entry point and pair ID as arguments. Each worker runs as an independent OS process with its own memory space and DragonflyStore.
 
 ```typescript
 Bun.spawn(["bun", workerPath, pairId], {
@@ -116,9 +116,8 @@ The 15-minute TTL is chosen to exceed the longest possible operation (bridge: 10
 On startup, each worker:
 
 1. Acquires the per-pair lock
-2. Opens (or creates) the SQLite database at `.data/{pairId}.db`
-3. Prunes stale data (> 90 days)
-4. Registers in local state
+2. Creates a DragonflyStore bound to the pairId
+3. Registers in local state
 5. Starts heartbeat interval
 6. Subscribes to the `btr:control` channel
 7. Enters the scheduler loop
@@ -132,7 +131,7 @@ The core loop runs on a configurable cycle interval (`pair.intervalSec`, default
 3. Run pool analysis and scoring
 4. Compute allocation decisions (PRA or RS strategy)
 5. Execute position changes (burn/rebalance/mint)
-6. Store results in SQLite
+6. Ingest results to OpenObserve
 7. Publish state to DragonflyDB
 8. Sleep until next cycle
 
@@ -179,5 +178,5 @@ Workers subscribe to the `btr:control` pub/sub channel for commands:
 
 - [REST API](./api.md) -- orchestrator and worker status endpoints
 - [Observability](./observability.md) -- log routing and monitoring
-- [SQLite Schema](../data/store.md) -- per-worker database
+- [Observability](./observability.md) -- O2 streams and logging
 - [Chain Configuration](../config/chains.md) -- RPC endpoints passed to workers

@@ -10,18 +10,16 @@ graph TD
     O --- API[API Server]
     O --- HM[Health Monitor]
     O --- DL[DragonflyDB Lock]
-    W1 --- DB1[SQLite + Scheduler]
-    W2 --- DB2[SQLite + Scheduler]
-    W3 --- DB3[SQLite + Scheduler]
+    W1 --- S1[Scheduler + DragonflyStore]
+    W2 --- S2[Scheduler + DragonflyStore]
+    W3 --- S3[Scheduler + DragonflyStore]
 ```
 
 The **orchestrator** (`src/orchestrator.ts`) is a singleton process protected by a DragonflyDB lock (TTL 60s, refreshed every 10s). It spawns one worker per configured pair, monitors heartbeats, and respawns crashed workers with exponential backoff (capped at 5 minutes, max 20 retries).
 
-Each **worker** (`src/worker.ts`) is an independent Bun process with its own SQLite database, scheduler loop, and DragonflyDB lock. Workers publish `WorkerState` JSON to Redis and listen on a pub/sub control channel for SHUTDOWN/RESTART commands.
+Each **worker** (`src/worker.ts`) is an independent Bun process with its own DragonflyStore, scheduler loop, and DragonflyDB lock. Workers publish `WorkerState` JSON to DragonflyDB and listen on a pub/sub control channel for SHUTDOWN/RESTART commands.
 
-The **API server** runs inside the orchestrator process in dual mode:
-- **Orchestrated mode**: reads worker state from DragonflyDB, opens read-only SQLite handles
-- **Legacy mode**: in-memory registry for single-process development
+The **API server** runs inside the orchestrator process. It reads worker state from DragonflyDB and historical data from OpenObserve.
 
 ## Data Flow
 
@@ -50,7 +48,7 @@ graph LR
 | Directory | Purpose |
 |-----------|---------|
 | `src/config/` | Static configuration: chains, DEXes, pools, pairs, tokens, params |
-| `src/data/` | Data ingestion: OHLC (ccxt), GeckoTerminal, SQLite store |
+| `src/data/` | Data ingestion: OHLC (ccxt), GeckoTerminal, DragonflyStore, O2 queries |
 | `src/strategy/` | Signal computation: forces, range, optimizer, allocation, decision |
 | `src/execution/` | On-chain operations: V3/Algebra/Aerodrome, V4, LB position adapters |
 | `src/infra/` | Infrastructure: Redis client, OpenObserve logger, structured logger |
@@ -61,7 +59,7 @@ Key top-level files:
 | File | Role |
 |------|------|
 | `src/orchestrator.ts` | Process supervisor, health monitor, API host |
-| `src/worker.ts` | Single-pair process: lock, DB, scheduler, heartbeat |
+| `src/worker.ts` | Single-pair process: lock, DragonflyStore, scheduler, heartbeat |
 | `src/scheduler.ts` | 5-step cycle loop (fetch/compute/decide/execute/log) |
 | `src/executor.ts` | PRA and RS execution orchestration (burn/swap/mint) |
 | `src/state.ts` | In-memory `PairRuntime` registry, `WorkerState` serialization |
@@ -75,7 +73,7 @@ Key top-level files:
 | EVM RPC | viem (multicall, contract reads/writes) |
 | CEX data | ccxt (Binance, Bybit, OKX, MEXC, Gate, Bitget) |
 | Pool data | GeckoTerminal REST API |
-| Local DB | bun:sqlite (WAL mode, one DB per pair) |
+| Hot state | DragonflyDB (positions, optimizer, epoch, candle cursor) |
 | Coordination | DragonflyDB (Redis-compatible, Bun built-in `RedisClient`) |
 | Telemetry | OpenObserve (HTTP buffered ingestion) |
 | Swap/Bridge | Li.Fi / Jumper API |

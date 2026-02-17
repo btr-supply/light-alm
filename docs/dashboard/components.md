@@ -143,5 +143,5 @@ Token categories:
 - [Dashboard Architecture](./overview.md) -- layout, state management, polling
 - [REST API](../infrastructure/api.md) -- data endpoints for each component
 - [Multi-Source OHLC](../data/ohlc.md) -- M15 candle aggregation for PriceChart
-- [SQLite Schema](../data/store.md) -- tables backing positions, tx_log, allocations
+- [Observability](../infrastructure/observability.md) -- O2 streams backing positions, tx_log, allocations
 - [Token Registry](../config/tokens.md) -- decimal formatting for display values

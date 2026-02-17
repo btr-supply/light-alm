@@ -87,12 +87,14 @@ Data is routed to separate OpenObserve streams by type:
 | Stream | Source | Description |
 |--------|--------|-------------|
 | `logs` | Logger | All structured log entries |
+| `candles` | ccxt OHLC | M1 candle data (backfill + live) |
 | `pool_snapshots` | GeckoTerminal | Pool TVL, volume, fees |
 | `pool_analyses` | Analysis engine | Per-pool force/range analysis |
 | `pair_allocations` | Strategy | Allocation decisions |
 | `epoch_snapshots` | Cycle end | Per-cycle summary metrics |
 | `tx_log` | Executor | Transaction records |
-| `optimizer_state` | Nelder-Mead | Optimizer warm-start data |
+| `positions` | Executor | Position lifecycle events (mint/burn) |
+| `optimizer_state` | Nelder-Mead | Optimizer params, fitness, and ForceParams snapshot |
 
 Each stream maps to an OpenObserve index with automatic field detection. No schema pre-configuration is needed.
 
@@ -130,5 +132,5 @@ SELECT pool, ts, tvl FROM pool_snapshots WHERE pool = '0x...' ORDER BY ts
 
 - [Process Orchestration](./orchestrator.md) -- worker log routing
 - [REST API](./api.md) -- API request logging
-- [SQLite Schema](../data/store.md) -- local storage (complementary to O2)
+- [DragonflyDB Store](../data/store-dragonfly.md) -- hot state persistence
 - [Multi-Source OHLC](../data/ohlc.md) -- candle stream source
