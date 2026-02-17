@@ -229,7 +229,21 @@ export async function runSingleCycle(
       // Persist optimizer warm-start
       await store.saveOptimizerState(rangeParamsToVec(opt.params), opt.fitness);
       ingestToO2("optimizer_state", [
-        { pairId: pair.id, ...opt.params, fitness: opt.fitness, evals: opt.evals },
+        {
+          pairId: pair.id,
+          ...opt.params,
+          fitness: opt.fitness,
+          evals: opt.evals,
+          forceParams: {
+            volatility: forceParams.volatility,
+            momentum: forceParams.momentum,
+            trend: forceParams.trend,
+            confidence: forceParams.confidence,
+            baseRange: forceParams.baseRange,
+            rsThreshold,
+            regimeWidenFactor: regime.widenFactor,
+          },
+        },
       ]);
       log.debug(
         `${pair.id}: optimizer fitness=${opt.fitness.toFixed(6)} evals=${opt.evals} rs=${rsThreshold.toFixed(3)}`,
