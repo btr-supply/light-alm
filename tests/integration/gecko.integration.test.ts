@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import { fetchPool, fetchPoolSnapshots } from "../../src/data/gecko";
-import { initPairStore } from "../../src/data/store";
 import type { PoolConfig } from "../../src/types";
 
 // Skip unless INTEGRATION=true - these hit real GeckoTerminal API
@@ -69,14 +68,13 @@ describeIntegration("GeckoTerminal API", () => {
   }, 15_000);
 
   test("fetchPoolSnapshots: batch fetch returns enriched snapshots", async () => {
-    const db = initPairStore("TEST-INTEGRATION", ":memory:");
     const pools: PoolConfig[] = Object.values(POOLS).map((p) => ({
       address: p.address,
       chain: p.chain,
       dex: p.dex,
     }));
 
-    const snapshots = await fetchPoolSnapshots(db, pools);
+    const snapshots = await fetchPoolSnapshots("TEST-INTEGRATION", pools);
     expect(snapshots.length).toBeGreaterThanOrEqual(1);
 
     for (const snap of snapshots) {
