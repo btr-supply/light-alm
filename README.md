@@ -1,6 +1,6 @@
 # BTR Agentic ALM
 
-Autonomous concentrated liquidity management across 7 EVM chains, 16 DEXes, and 41 pools.
+Autonomous concentrated liquidity management across 7 EVM chains, 20+ DEXes, and hundreds of pools.
 
 ## Overview
 
@@ -30,42 +30,23 @@ flowchart LR
 
 ```mermaid
 graph TD
-    subgraph Orchestrator
-        O[Orchestrator] -->|Bun.spawn| W1[Worker: pair A]
-        O -->|Bun.spawn| W2[Worker: pair B]
-        O -->|Bun.spawn| W3[Worker: pair N]
-        O --- API[API Server :3001]
-        O --- HM[Health Monitor]
-    end
+    O[Orchestrator + API :3001] -->|Bun.spawn| W1[Worker: pair A]
+    O -->|Bun.spawn| W2[Worker: pair B]
+    O -->|Bun.spawn| W3[Worker: pair N]
 
-    subgraph Data
-        DF[(DragonflyDB)]
-        O2[(OpenObserve)]
-    end
+    O <-->|lock / config| DF[(DragonflyDB)]
+    W1 & W2 & W3 <-->|state / positions| DF
+    W1 & W2 & W3 -->|logs / snapshots| O2[(OpenObserve)]
 
-    O <-->|lock / heartbeat / state| DF
-    W1 <-->|positions / optimizer / epoch| DF
-    W2 <-->|positions / optimizer / epoch| DF
-    W3 <-->|positions / optimizer / epoch| DF
-
-    W1 -->|logs / snapshots| O2
-    W2 -->|logs / snapshots| O2
-    W3 -->|logs / snapshots| O2
-
-    subgraph External
-        CEX[CEX APIs · ccxt]
-        GECKO[GeckoTerminal]
-        CHAINS[EVM Chains · viem]
-        BRIDGE[Li.Fi / Jumper]
-    end
-
-    W1 --> CEX & GECKO & BRIDGE
-    W1 <--> CHAINS
+    W1 & W2 & W3 <-->|RPC · viem| CHAINS[EVM Chains]
+    W1 & W2 & W3 -->|prices · ccxt| CEX[CEX APIs]
+    W1 & W2 & W3 -->|pools| GECKO[GeckoTerminal]
+    W1 & W2 & W3 -->|swaps| BRIDGE[Li.Fi / Jumper]
 ```
 
-**Orchestrator** — Singleton protected by DragonflyDB lock. Spawns one worker per pair, monitors heartbeats, respawns with exponential backoff.
+**Orchestrator** — Singleton protected by DragonflyDB lock. Spawns one worker per pair, monitors heartbeats, serves the REST API, respawns with exponential backoff.
 
-**Workers** — Independent process per asset pair. Runs its own scheduler loop, candle buffer, and on-chain execution.
+**Workers** — Independent processes, one per asset pair. Each runs its own scheduler loop, candle buffer, and on-chain execution.
 
 **DragonflyDB** — Hot state: positions, optimizer warm-start, epoch counters, config CRUD.
 
