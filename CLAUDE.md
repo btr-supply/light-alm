@@ -14,6 +14,7 @@ Every implementation (feature, fix, test, refactor) must be reviewed and validat
 - **Performance** — no unnecessary allocations, O(n) over O(n*k), avoid redundant computations
 - **Genericity** — reusable patterns, no hardcoded values that should be configurable, single source of truth
 - **Conciseness** — minimal code to achieve the goal, no dead code, no over-engineering, no premature abstractions
+- **No fakes** — never output placeholder data, stub values, or approximate/invented numbers. Compute from real data or don't show it. No "coming soon" placeholders, no TODO stubs that ship as features, no smoky code or tests
 
 ## Audit
 

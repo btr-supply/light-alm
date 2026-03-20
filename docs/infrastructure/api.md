@@ -5,7 +5,7 @@ HTTP API for querying system state, pair data, and orchestrator management.
 ## Server Configuration
 
 - **Port**: 3001 (configurable via `API_PORT` env var)
-- **CORS**: enabled for all origins (`*`), methods GET/POST/OPTIONS
+- **CORS**: enabled for all origins (`*`), methods GET/POST/PUT/DELETE/OPTIONS
 - **Runtime**: Bun's built-in HTTP server (`Bun.serve`)
 - **BigInt serialization**: all BigInt values in JSON responses are converted to strings
 
@@ -112,6 +112,49 @@ POST /api/orchestrator/workers/:id/restart
 
 Orchestrated mode only. Force-restart a specific worker via pub/sub command. **Requires authentication**: `Authorization: Bearer <token>` header. The token is configured via `API_TOKEN` env var. Returns 401 if missing or invalid.
 
+### Config: List Pairs
+
+```
+GET /api/config/pairs
+```
+
+Orchestrated mode only. Returns all pair configurations from DragonflyDB.
+
+### Config: Get Pair
+
+```
+GET /api/config/pairs/:id
+```
+
+Orchestrated mode only. Returns configuration for a specific pair. Returns 404 if not found.
+
+### Config: Create/Update Pair
+
+```
+PUT /api/config/pairs/:id
+```
+
+Orchestrated mode only. **Requires authentication.** Create or update a pair configuration. Body:
+
+```json
+{
+  "pools": [{"chain": 56, "address": "0x...", "dex": "PCS_V3"}],
+  "intervalSec": 900,
+  "maxPositions": 3,
+  "thresholds": {"pra": 0.05, "rs": 0.25}
+}
+```
+
+Validates: pair ID format (TOKEN0-TOKEN1 with known tokens), pool addresses (20-byte or bytes32), DEX IDs, numeric ranges. Publishes a `CONFIG_CHANGED` event to trigger orchestrator reconciliation.
+
+### Config: Delete Pair
+
+```
+DELETE /api/config/pairs/:id
+```
+
+Orchestrated mode only. **Requires authentication.** Removes a pair configuration and publishes `CONFIG_CHANGED` to stop the worker.
+
 ## Response Format
 
 All responses are **raw JSON** -- there is no `{ "data": ..., "timestamp": ... }` wrapper. Each endpoint returns its data directly:
@@ -130,7 +173,7 @@ Error responses:
 CORS headers are included on every response:
 ```
 Access-Control-Allow-Origin: *
-Access-Control-Allow-Methods: GET, POST, OPTIONS
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
 Access-Control-Allow-Headers: Content-Type, Authorization
 ```
 
@@ -151,4 +194,3 @@ Consumers should parse these as BigInt or appropriate arbitrary-precision types.
 
 - [Process Orchestration](./orchestrator.md) -- worker state and DragonflyDB keys
 - [Observability](./observability.md) -- O2 streams queried by the API
-- [Observability](./observability.md) -- API request logging

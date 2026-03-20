@@ -34,7 +34,7 @@ Binary search (bisection) finds $\lambda$ in the interval $[10^{-4},\ \max(A_i)]
 |-----------|-------|---------|
 | `maxPositions` | configurable per pair (default 3) | Cap on number of active pools |
 | `ALLOC_MIN_PCT` | 0.001 (0.1%) | Minimum allocation to include a pool |
-| `POSITION_VALUE_USD` | 10,000 | Default total capital for dilution calculation |
+| `DEFAULT_CAPITAL_USD` | 10,000 | Default total capital for dilution calculation (fallback when no positions) |
 
 Pools are ranked by APR and only the top `maxPositions` with positive APR are considered. Allocations below 0.1% are dropped, and the remainder is normalized to sum to 100%.
 

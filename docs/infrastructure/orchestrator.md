@@ -9,11 +9,16 @@ The system follows a **process-per-strategy** model. One orchestrator process ma
 ```
 Orchestrator (singleton)
     |-- Health Monitor (10s interval)
-    |-- API Server (port 3001)
     |-- Worker: USDC-USDT
     |-- Worker: WETH-USDC
     +-- Worker: ...
+
+API Server (independent process)
+    |-- Reads DragonflyDB (worker state, config, positions)
+    +-- Reads OpenObserve (candles, snapshots, allocations)
 ```
+
+The API server runs as a separate process, isolated from the orchestrator. If the API is attacked or crashes, the orchestrator and workers continue unaffected.
 
 ## Lifecycle
 
@@ -23,8 +28,7 @@ graph TD
     B -->|failed| Z[Exit: already running]
     B -->|acquired| C[Load pair configs]
     C --> D[Spawn workers]
-    D --> E[Start API server]
-    E --> F[Health check loop]
+    D --> F[Health check loop]
     F --> G{SIGHUP?}
     G -->|yes| H[Reload config]
     H --> I[Stop removed workers]
@@ -81,12 +85,13 @@ An API-triggered restart sets a `btr:worker:{pairId}:restarting` flag in Redis, 
 
 ### Config Reload
 
-Sending `SIGHUP` to the orchestrator triggers a configuration reload:
+Sending `SIGHUP` to the orchestrator triggers a configuration reconciliation:
 
-1. Pair configs are re-read from `loadPairConfigs()`
-2. Removed pairs get their workers killed
-3. New pairs get new workers spawned
-4. The `btr:workers` SET is updated in DragonflyDB
+1. Pair configs are re-read from DragonflyDB
+2. Removed pairs get their workers killed and store keys cleaned
+3. Modified pairs get their workers restarted
+4. New pairs get new workers spawned
+5. The `btr:workers` SET is updated in DragonflyDB
 
 ### Graceful Shutdown
 
@@ -177,6 +182,6 @@ Workers subscribe to the `btr:control` pub/sub channel for commands:
 ## See Also
 
 - [REST API](./api.md) -- orchestrator and worker status endpoints
-- [Observability](./observability.md) -- log routing and monitoring
+- [Deployment](./deployment.md) -- Docker Compose, dev/prod modes
 - [Observability](./observability.md) -- O2 streams and logging
 - [Chain Configuration](../config/chains.md) -- RPC endpoints passed to workers

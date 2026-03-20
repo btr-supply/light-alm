@@ -1,14 +1,26 @@
+networks:
+  btr-net:
+    name: btr-net
+    driver: bridge
+
 services:
   dragonfly:
     image: docker.dragonflydb.io/dragonflydb/dragonfly:latest
     restart: unless-stopped
+    networks: [btr-net]
     expose:
       - "6379"
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
       - dragonfly-data:/data
-    command: dragonfly --maxmemory 512mb --proactor_threads 2
+    command: >-
+      dragonfly
+      --maxmemory 512mb
+      --proactor_threads 2
+      --dir /data
+      --dbfilename dump
+      --logtostdout
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -18,6 +30,7 @@ services:
   openobserve:
     image: public.ecr.aws/zinclabs/openobserve:latest
     restart: unless-stopped
+    networks: [btr-net]
     expose:
       - "5080"
     ports:
@@ -28,16 +41,43 @@ services:
       ZO_ROOT_USER_EMAIL: admin@btr.supply
       ZO_ROOT_USER_PASSWORD: ${O2_PASSWORD:-btr_dev_2024}
       ZO_DATA_DIR: /data
+      ZO_TELEMETRY_ENABLED: "false"
+      ZO_COMPACT_ENABLED: "true"
+      ZO_COMPACT_MAX_FILE_SIZE: "64"
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:5080/healthz"]
       interval: 10s
       retries: 5
       start_period: 10s
 
-  backend:
+  # Docker socket proxy — restricts API access for orchestrator container security
+  docker-proxy:
+    profiles: [prod]
+    image: tecnativa/docker-socket-proxy:0.2
+    restart: unless-stopped
+    networks: [btr-net]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      CONTAINERS: 1
+      NETWORKS: 0
+      IMAGES: 0
+      VOLUMES: 0
+      SERVICES: 0
+      TASKS: 0
+      NODES: 0
+      POST: 1
+      DELETE: 1
+    expose:
+      - "2375"
+
+  api:
     profiles: [prod]
     build: .
+    image: btr-alm
+    command: ["bun", "src/api-server.ts"]
     restart: unless-stopped
+    networks: [btr-net]
     expose:
       - "3001"
     ports:
@@ -50,19 +90,44 @@ services:
     environment:
       DRAGONFLY_URL: redis://dragonfly:6379
       O2_URL: http://openobserve:5080
-      O2_ORG: default
+      O2_ORG: ${O2_ORG:-default}
       O2_TOKEN: ${O2_TOKEN}
       API_TOKEN: ${API_TOKEN}
       API_PORT: "3001"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    healthcheck:
+      test:
+        ["CMD", "wget", "-q", "--spider", "http://localhost:3001/api/health"]
+      interval: 10s
+      retries: 3
+      start_period: 5s
+
+  orchestrator:
+    profiles: [prod]
+    image: btr-alm
+    command: ["bun", "src/orchestrator.ts", "--docker"]
+    restart: unless-stopped
+    networks: [btr-net]
+    depends_on:
+      dragonfly:
+        condition: service_healthy
+      openobserve:
+        condition: service_healthy
+      docker-proxy:
+        condition: service_started
+    environment:
+      ORCHESTRATOR_MODE: docker
+      DOCKER_HOST: tcp://docker-proxy:2375
+      DOCKER_NETWORK: btr-net
+      DOCKER_IMAGE: btr-alm
+      DRAGONFLY_URL: redis://dragonfly:6379
+      O2_URL: http://openobserve:5080
+      O2_ORG: ${O2_ORG:-default}
+      O2_TOKEN: ${O2_TOKEN}
       PAIRS: ${PAIRS:-USDC-USDT}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     env_file:
       - .env
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3001/api/health"]
-      interval: 10s
-      retries: 3
-      start_period: 15s
 
   dashboard:
     profiles: [prod]
@@ -70,10 +135,11 @@ services:
       context: .
       dockerfile: dashboard/Dockerfile
     restart: unless-stopped
+    networks: [btr-net]
     ports:
       - "127.0.0.1:80:80"
     depends_on:
-      backend:
+      api:
         condition: service_healthy
 
 volumes:

@@ -4,7 +4,9 @@
 
 ```mermaid
 graph TD
-    O[Orchestrator + API :3001] -->|Bun.spawn| W1 & W2
+    API[API Server :3001] <-->|read state| DF
+    API <-->|query| O2
+    O[Orchestrator] -->|spawn| W1 & W2
 
     subgraph Workers
         W1[Worker: pair A]
@@ -30,11 +32,11 @@ graph TD
     W1 & W2 --> CEX & GECKO & BRIDGE
 ```
 
-The **orchestrator** (`src/orchestrator.ts`) is a singleton process protected by a DragonflyDB lock (TTL 60s, refreshed every 10s). It spawns one worker per configured pair, monitors heartbeats, and respawns crashed workers with exponential backoff (capped at 5 minutes, max 20 retries).
+The **orchestrator** (`src/orchestrator.ts`) is a singleton process protected by a DragonflyDB lock (TTL 60s, refreshed every 10s). It spawns one worker per configured pair, monitors heartbeats, and respawns crashed workers with exponential backoff (capped at 5 minutes, max 20 retries). Workers can be spawned as child processes (`Bun.spawn`, dev mode) or as Docker containers (via socket proxy, prod mode), controlled by `ORCHESTRATOR_MODE`.
 
-Each **worker** (`src/worker.ts`) is an independent Bun process with its own DragonflyStore, scheduler loop, and DragonflyDB lock. Workers publish `WorkerState` JSON to DragonflyDB and listen on a pub/sub control channel for SHUTDOWN/RESTART commands.
+Each **worker** (`src/worker.ts`) is an independent process with its own DragonflyStore, scheduler loop, and DragonflyDB lock. Workers publish `WorkerState` JSON to DragonflyDB and listen on a pub/sub control channel for SHUTDOWN/RESTART commands.
 
-The **API server** runs inside the orchestrator process. It reads worker state from DragonflyDB and historical data from OpenObserve.
+The **API server** (`src/api-server.ts`) runs as a separate process, isolated from the orchestrator. It reads worker state from DragonflyDB and historical data from OpenObserve. This decoupling ensures the orchestrator and workers continue operating if the API is attacked or crashes.
 
 ## Data Flow
 
@@ -70,7 +72,7 @@ Key top-level files:
 
 | File | Role |
 |------|------|
-| `src/orchestrator.ts` | Process supervisor, health monitor, API host |
+| `src/orchestrator.ts` | Process supervisor, health monitor |
 | `src/worker.ts` | Single-pair process: lock, DragonflyStore, scheduler, heartbeat |
 | `src/scheduler.ts` | 5-step cycle loop (fetch/compute/decide/execute/log) |
 | `src/executor.ts` | PRA and RS execution orchestration (burn/swap/mint) |

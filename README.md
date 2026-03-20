@@ -6,7 +6,7 @@ The EOAs can easily be replaced by [Smart Accounts](docs/migration-smart-account
 
 ## Overview
 
-BTR Light ALM manages Uniswap V3-style liquidity positions with zero human intervention. Each strategy (asset pair) runs a 5-step cycle every 15 minutes:
+BTR Light ALM manages Uniswap V3-style liquidity positions with zero human intervention. Each strategy runs a 5-step cycle every 15 minutes:
 
 ```mermaid
 flowchart LR
@@ -27,15 +27,32 @@ flowchart LR
 | **Decide** | PRA (pool reallocation), RS (range shift), or HOLD |
 | **Execute** | Burn, rebalance via Li.Fi/Jumper, mint across V3/V4/LB DEXes |
 
+## Key Concepts
+
+| Term | Definition |
+|------|-----------|
+| **Pair** | A token pair (e.g., USDC-USDT). One pair can be served by many strategies. |
+| **Strategy** | A configured trading strategy on a specific pair. Multiple strategies can share the same pair. |
+| **Worker** | Generic term for any independent process managed by the orchestrator. Two types: collector and strategy runner. |
+| **Collector** | A worker that fetches market (OHLC) and pool (GeckoTerminal) data for a pair. Singleton per pair — one collector per pair, shared by all strategies on that pair. Persists independently of strategies. |
+| **Strategy runner** | A worker that executes a trading strategy. Reads collected data from the collector for its pair. |
+
 ## Architecture
 
 ```mermaid
 graph TD
-    O[Orchestrator + API :3001] -->|Bun.spawn| W1 & W2
+    API[API Server :3001] <-->|read state| DF
+    API <-->|query| O2
+    O[Orchestrator] -->|Bun.spawn| C1 & C2 & S1 & S2
 
-    subgraph Workers
-        W1[Worker: pair A]
-        W2[Worker: pair B]
+    subgraph Collectors
+        C1[Collector: pair A]
+        C2[Collector: pair B]
+    end
+
+    subgraph Strategy Runners
+        S1[Strategy: pair A v1]
+        S2[Strategy: pair B v1]
     end
 
     subgraph Data
@@ -51,17 +68,23 @@ graph TD
     end
 
     O <-->|lock / config| DF
-    W1 & W2 <-->|state| DF
-    W1 & W2 -->|logs+epochs| O2
-    W1 & W2 <--> CHAINS
-    W1 & W2 --> CEX & GECKO & BRIDGE
+    C1 & C2 -->|candles + snapshots| DF
+    C1 & C2 -->|historical| O2
+    C1 & C2 --> CEX & GECKO
+    S1 & S2 <-->|read data / write state| DF
+    S1 & S2 -->|logs + epochs| O2
+    S1 & S2 <--> CHAINS & BRIDGE
 ```
 
-**Orchestrator** — Singleton protected by DragonflyDB lock. Spawns one worker per pair, monitors heartbeats, serves the REST API, respawns with exponential backoff.
+**API Server** — Stateless HTTP server reading from DragonflyDB and OpenObserve. Runs as an independent process, isolated from orchestrator failures.
 
-**Workers** — Independent processes, one per asset pair. Each runs its own scheduler loop, candle buffer, and on-chain execution.
+**Orchestrator** — Singleton protected by DragonflyDB lock. Manages two worker types: collectors (one per pair) and strategy runners (one per strategy). Ensures collectors are running before starting strategies. Monitors heartbeats, respawns with exponential backoff.
 
-**DragonflyDB** — Hot state: positions, optimizer warm-start, epoch counters, config CRUD.
+**Collectors** — Independent worker processes, one per token pair (singleton). Each fetches OHLC candles (via ccxt) and pool snapshots (via GeckoTerminal) on the pair's interval. Writes data to shared DragonflyDB keys and ingests to OpenObserve. Persists even when strategies stop — configured via a dedicated collector pair list.
+
+**Strategy Runners** — Independent worker processes, one per strategy. Each reads collected data from DragonflyDB (written by the collector for its pair), computes forces, optimizes, decides, and executes on-chain. Falls back to direct data fetching in standalone mode.
+
+**DragonflyDB** — Hot state: positions, optimizer warm-start, epoch counters, config CRUD, shared collected data (candles + snapshots).
 
 **OpenObserve** — Cold storage: logs, candles, pool analyses, allocations, epoch snapshots.
 
@@ -101,16 +124,17 @@ bun run dev:front
 
 | Script | What it does |
 |--------|-------------|
-| `bun run dev` | Starts Docker DB stack + backend with `--watch` |
+| `bun run dev` | Starts Docker infra + orchestrator + API with `--watch` |
 | `bun run dev:infra` | Starts only DragonflyDB + OpenObserve containers |
-| `bun run dev:back` | Runs backend only (no Docker, no checks) |
-| `bun run dev:front` | Runs dashboard Vite dev server (port 5173) |
+| `bun run dev:api` | API server only with `--watch` |
+| `bun run dev:back` | Orchestrator + API with `--watch` |
+| `bun run dev:front` | Dashboard Vite dev server (port 5173) |
 | `bun run start` | Single-instance CLI mode (no Docker) |
-| `bun run orchestrate` | Multi-worker orchestrated mode (no Docker) |
+| `bun run orchestrate` | Orchestrator only (no Docker, no API) |
 
 ### Production
 
-Prod mode containerizes everything: DB stack, backend, and dashboard.
+Prod mode containerizes everything: DB stack, API, orchestrator, and dashboard as separate containers.
 
 ```bash
 bun run prod
@@ -119,7 +143,7 @@ bun run prod
 
 | Script | What it does |
 |--------|-------------|
-| `bun run prod` | Builds and starts all 4 containers |
+| `bun run prod` | Builds and starts the full stack (6 containers) |
 | `bun run prod:down` | Stops and removes all containers |
 
 ### Tests

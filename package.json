@@ -11,11 +11,12 @@
     "lint:fix": "bunx oxlint --fix src/ tests/ shared/ scripts/ dashboard/src/",
     "typecheck": "bunx tsgo --noEmit",
     "check": "bun run fmt:check && bun run lint && bun run typecheck",
-    "dev:infra": "docker compose up -d",
+    "dev:infra": "docker compose up -d dragonfly openobserve",
+    "dev:api": "bun --watch src/api-server.ts",
     "dev:back": "bun --watch src/index.ts",
     "dev:front": "bun run --cwd dashboard dev",
-    "dev": "docker compose up -d && bun run check && bun --watch src/index.ts",
-    "start": "bun run check && bun src/index.ts",
+    "dev": "bash scripts/dev.sh",
+    "start": "bun src/index.ts",
     "orchestrate": "bun src/orchestrator.ts",
     "prod": "docker compose --profile prod up -d --build",
     "prod:down": "docker compose --profile prod down",
@@ -29,7 +30,8 @@
   "devDependencies": {
     "@types/bun": "latest",
     "@typescript/native-preview": "latest",
+    "oxfmt": "latest",
     "oxlint": "latest",
-    "oxfmt": "latest"
+    "puppeteer": "^24.37.5"
   }
 }

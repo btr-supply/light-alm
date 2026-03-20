@@ -2,7 +2,7 @@
 
 **Source**: `src/strategy/optimizer.ts`
 
-The optimizer tunes 5 range parameters online using Nelder-Mead simplex search, maximizing net yield (fee income minus LVR and rebalancing costs). It runs every epoch (15 min) and converges in up to 300 evaluations.
+The optimizer tunes 5 range parameters online using Nelder-Mead simplex search, maximizing net yield (fee income minus LVR and rebalancing costs). It runs every cycle (default 15 min, configurable per-strategy via `intervalSec`) and converges in up to 300 evaluations.
 
 ## Optimized Parameters
 
@@ -30,7 +30,7 @@ Per-epoch LVR accumulation when price $P$ is in range $[p_L, p_H]$:
 
 $$\text{LVR}_{\text{epoch}} = \frac{\sigma^2}{2} \cdot \frac{\sqrt{P}}{\sqrt{p_H} - \sqrt{p_L}} \cdot \Delta t$$
 
-where $\sigma$ is the Parkinson volatility and $\Delta t$ is the epoch duration in years ($900 / 31{,}557{,}600$). This captures the fundamental cost of providing liquidity: the AMM continuously sells the appreciating asset, crystallizing loss versus a holding strategy.
+where $\sigma$ is the Parkinson volatility and $\Delta t$ is the simulation bar duration in years (`SIM_BAR_SEC / SECONDS_PER_YEAR` = $900 / 31{,}557{,}600$). This captures the fundamental cost of providing liquidity: the AMM continuously sells the appreciating asset, crystallizing loss versus a holding strategy.
 
 **Continuous-only LVR accounting**: the optimizer uses only the continuous LVR formula (Milionis et al.). Discrete LVR at range shift events (HODL value minus LP value) is a subset of the continuous accumulation, so it is **not** subtracted separately to avoid double-counting.
 
@@ -44,7 +44,7 @@ where $G$ is gas cost (USD), $f$ the pool fee, $s = 0.001$ (10bps swap friction,
 
 ### Minimum RS Gap
 
-Range shifts in the simulation are throttled to at least **4 epochs** apart (`FITNESS_MIN_RS_GAP = 4`). This prevents the optimizer from rewarding hyper-frequent rebalancing that would be dominated by gas costs in practice.
+Range shifts in the simulation are throttled to at least **4 bars** apart (`SIM_MIN_REBAL_GAP = 4`). This prevents the optimizer from rewarding hyper-frequent rebalancing that would be dominated by gas costs in practice.
 
 ## Train / Validation Split
 
@@ -83,12 +83,12 @@ if (saved) setWarmStart(pair.id, saved.vec);
 
 ## Regime Detection (Circuit Breaker)
 
-Before running the optimizer, a regime check can suppress it for up to 4 epochs (`REGIME_SUPPRESS_EPOCHS`):
+Before running the optimizer, a regime check can suppress it for up to 4 cycles (`REGIME_SUPPRESS_CYCLES`):
 
 | Trigger | Condition | Effect |
 |---------|-----------|--------|
-| Volatility spike | 1h Parkinson vol > mean + 3*sigma (30d hourly samples) | Suppress optimizer for 4 epochs |
-| Price displacement | 1h price move > 2% (stables) or > 10% (volatile) | Suppress optimizer for 4 epochs |
+| Volatility spike | 1h Parkinson vol > mean + 3*sigma (30d hourly samples) | Suppress optimizer for 4 cycles |
+| Price displacement | 1h price move > 2% (stables) or > 10% (volatile) | Suppress optimizer for 4 cycles |
 | Volume anomaly | Epoch volume > 5x average epoch volume | **Widen range by 1.5x** (no suppression) |
 
 When suppressed, the system forces HOLD decisions (no PRA/RS execution). The volume anomaly regime does **not** suppress -- it widens the range by `REGIME_WIDEN_FACTOR = 1.5` to accommodate increased volatility while continuing normal operation.
@@ -99,7 +99,7 @@ Post-optimization safety checks that revert to default parameters:
 
 | Kill-switch | Condition |
 |-------------|-----------|
-| Negative yield | Trailing 6h (24 epochs) mean net yield < 0 |
+| Negative yield | Trailing 6h (`KS_YIELD_WINDOW_MS`, dynamic count based on `cycleSec`) mean net yield < 0 |
 | Excessive RS | > 8 range shifts in trailing 4h window |
 | Pathological range | `baseMax - baseMin < 0.001` |
 | Gas budget | Trailing 24h gas cost > 5% of position value |
