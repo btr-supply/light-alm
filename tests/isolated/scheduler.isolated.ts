@@ -1,8 +1,6 @@
-import { describe, expect, test, mock, beforeEach, beforeAll } from "bun:test";
-import type { PairConfig, PoolConfig, PoolSnapshot, Position } from "../../src/types";
-import { silenceLog } from "../helpers";
-
-beforeAll(silenceLog);
+import { describe, expect, test, mock, beforeEach } from "bun:test";
+import type { PairConfig, PoolConfig, PoolSnapshot } from "../../src/types";
+import { createMockStore } from "../helpers";
 
 const poolAddr = "0x0000000000000000000000000000000000000001" as `0x${string}`;
 
@@ -12,42 +10,7 @@ const executeRSMock = mock(async () => {});
 
 // ---- In-memory mock DragonflyStore ----
 
-const positionsMap = new Map<string, Position>();
-let optimizerState: { vec: number[]; fitness: number } | null = null;
-let epoch = 0;
-let regimeSuppress = 0;
-let candleCursor = 0;
-
-const mockStore = {
-  savePosition: async (p: Position) => { positionsMap.set(p.id, p); },
-  getPositions: async () => [...positionsMap.values()],
-  deletePosition: async (id: string) => { positionsMap.delete(id); },
-  getOptimizerState: async () => optimizerState,
-  saveOptimizerState: async (vec: number[], fitness: number) => {
-    optimizerState = { vec, fitness };
-  },
-  getEpoch: async () => epoch,
-  incrementEpoch: async () => ++epoch,
-  getRegimeSuppressUntil: async () => regimeSuppress,
-  setRegimeSuppressUntil: async (e: number) => { regimeSuppress = e; },
-  getLatestCandleTs: async () => candleCursor,
-  setLatestCandleTs: async (ts: number) => { candleCursor = ts; },
-  deleteAll: async () => {
-    positionsMap.clear();
-    optimizerState = null;
-    epoch = 0;
-    regimeSuppress = 0;
-    candleCursor = 0;
-  },
-};
-
-function resetMockStore() {
-  positionsMap.clear();
-  optimizerState = null;
-  epoch = 0;
-  regimeSuppress = 0;
-  candleCursor = 0;
-}
+const mockStore = createMockStore();
 
 // ---- Track ingested pair allocations ----
 let lastIngestedAllocation: any = null;
@@ -55,6 +18,10 @@ let lastIngestedAllocation: any = null;
 mock.module("../../src/data/ohlc", () => ({
   fetchLatestM1: mock(async () => []),
   backfill: mock(async () => {}),
+  trimCandles: (candles: any[], cutoff: number) => {
+    const i = candles.findIndex((c: any) => c.ts >= cutoff);
+    if (i > 0) candles.splice(0, i);
+  },
 }));
 
 mock.module("../../src/data/gecko", () => ({
@@ -76,7 +43,7 @@ mock.module("../../src/executor", () => ({
 mock.module("../../src/data/store-o2", () => ({
   getLastSnapshot: mock(async () => null),
   getLatestPairAllocation: mock(async () => lastIngestedAllocation),
-  getPairAllocations: mock(async () => lastIngestedAllocation ? [lastIngestedAllocation] : []),
+  getPairAllocations: mock(async () => (lastIngestedAllocation ? [lastIngestedAllocation] : [])),
   getRecentYields: mock(async () => []),
   getRecentRsTimestamps: mock(async () => []),
   getTrailingTxCount: mock(async () => 0),
@@ -101,7 +68,7 @@ const { registerPair, getPair } = await import("../../src/state");
 describe("cycle", () => {
   const poolCfg: PoolConfig = {
     address: poolAddr,
-    chain: 1,
+    chain: 42161,  // Arbitrum: $0.10 gas (chain 1 = $5 would trip the PRA gas gate)
     dex: "uniswap_v3",
   };
 
@@ -110,12 +77,12 @@ describe("cycle", () => {
     token0: {
       symbol: "USDC",
       decimals: 6,
-      addresses: { 1: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as `0x${string}` },
+      addresses: { 42161: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831" as `0x${string}` },
     },
     token1: {
       symbol: "USDT",
       decimals: 6,
-      addresses: { 1: "0xdAC17F958D2ee523a2206206994597C13D831ec7" as `0x${string}` },
+      addresses: { 42161: "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9" as `0x${string}` },
     },
     eoaEnvVar: "PK_USDC_USDT",
     pools: [poolCfg],
@@ -124,8 +91,8 @@ describe("cycle", () => {
     thresholds: { pra: 0.05, rs: 0.25 },
   };
 
-  beforeEach(() => {
-    resetMockStore();
+  beforeEach(async () => {
+    await mockStore.deleteAll();
     registerPair(pair.id, mockStore as any, pair);
     mockSnapshots = [];
     lastIngestedAllocation = null;
@@ -135,7 +102,7 @@ describe("cycle", () => {
 
   const snapshot: PoolSnapshot = {
     pool: poolAddr,
-    chain: 1,
+    chain: 42161,
     ts: Date.now(),
     volume24h: 500_000,
     tvl: 5_000_000,

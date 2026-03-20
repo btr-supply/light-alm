@@ -1,11 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import {
-  computeRange,
-  rangeDivergence,
-  priceToTick,
-  alignTick,
-  rangeToTicks,
-} from "../../src/strategy/range";
+import { computeRange, rangeDivergence, alignTick, rangeToTicks } from "../../src/strategy/range";
+import { priceToTick } from "../../shared/format";
 import { neutralForces } from "../helpers";
 
 describe("computeRange", () => {

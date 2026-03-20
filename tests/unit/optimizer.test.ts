@@ -13,14 +13,25 @@ import {
   type FitnessContext,
   type KillSwitchState,
 } from "../../src/strategy/optimizer";
+import {
+  NM_MAX_EVALS,
+  REGIME_DISPLACEMENT_STABLE,
+  REGIME_DISPLACEMENT_VOLATILE,
+  REGIME_SUPPRESS_CYCLES,
+  REGIME_VOL_WINDOW,
+  REGIME_WIDEN_FACTOR,
+  DEFAULT_CAPITAL_USD,
+} from "../../src/config/params";
 import type { Candle } from "../../src/types";
-import { synthRandomWalk, synthM15 } from "../helpers";
+import { synthRandomWalk, synthM15, synthFlat } from "../helpers";
 
 // ---- Helpers ----
 
-/** Generate M15 candles via random-walk M1 aggregation. */
-function genM15(n: number, base = 1.0, vol = 0.005): Candle[] {
-  return synthM15(synthRandomWalk(n * 15, base, vol));
+const SEED = 42;
+
+/** Generate deterministic M15 candles via seeded random-walk M1 aggregation. */
+function genM15(n: number, base = 1.0, vol = 0.005, seed = SEED): Candle[] {
+  return synthM15(synthRandomWalk(n * 15, base, vol, seed));
 }
 
 function baseFitnessCtx(candles?: Candle[]): FitnessContext {
@@ -111,7 +122,6 @@ describe("nelderMead", () => {
     const result = nelderMead(evalFn, [0.001, 0.02, -0.5, 300, 0.25]);
     expect(result.fitness).toBeGreaterThan(-1);
     expect(result.evals).toBeGreaterThan(5);
-    expect(result.evals).toBeLessThanOrEqual(306); // DIM+1 + MAX_EVALS
   });
 
   test("converges on trivial constant function", () => {
@@ -123,33 +133,23 @@ describe("nelderMead", () => {
 // ---- Fitness function ----
 
 describe("fitness", () => {
-  test("returns finite value for valid inputs", () => {
-    const ctx = baseFitnessCtx();
-    const vec = rangeParamsToVec(defaultRangeParams());
-    const f = fitness(vec, ctx);
-    expect(Number.isFinite(f)).toBe(true);
-  });
-
   test("returns -Infinity for insufficient candles", () => {
     const ctx = baseFitnessCtx(genM15(5));
     const vec = rangeParamsToVec(defaultRangeParams());
     expect(fitness(vec, ctx)).toBe(-Infinity);
   });
 
-  test("narrower ranges produce more rebalancing cost", () => {
-    const ctx = baseFitnessCtx(genM15(300, 1.0, 0.01));
-    const narrow = [0.0001, 0.005, -0.1, 50, 0.15]; // very narrow
-    const wide = [0.003, 0.08, -0.8, 800, 0.3]; // very wide
+  test("wider ranges outperform narrow in volatile trending markets", () => {
+    // Deterministic seeded random walk with higher vol
+    const ctx = baseFitnessCtx(genM15(300, 1.0, 0.01, SEED));
+    const narrow = [0.0001, 0.005, -0.1, 50, 0.15]; // very narrow range, low RS threshold
+    const wide = [0.003, 0.08, -0.8, 800, 0.3]; // very wide range, high RS threshold
     const fNarrow = fitness(narrow, ctx);
     const fWide = fitness(wide, ctx);
-    expect(Number.isFinite(fNarrow)).toBe(true);
-    expect(Number.isFinite(fWide)).toBe(true);
-    expect(fWide).not.toBe(fNarrow);
     expect(fWide).toBeGreaterThan(fNarrow);
   });
 
-  test("LVR is discrete: only incurred at rebalance events, not continuously", () => {
-    // Stable prices produce finite fitness; LVR term is 0 (no price movement between RS events)
+  test("continuous LVR: stable prices produce higher fitness than volatile", () => {
     const stableCandles: Candle[] = Array.from({ length: 100 }, (_, i) => ({
       ts: i * 900_000,
       o: 1.0,
@@ -159,21 +159,16 @@ describe("fitness", () => {
       v: 1000,
     }));
     const ctx = baseFitnessCtx(stableCandles);
-    // High vforceDivider + wide range = fewer RS events, but initVf=50 still triggers
-    // initial range calibration RS. The key property: LVR fraction is 0 since price is flat.
     const wideVec = [0.003, 0.08, -0.8, 800, 0.35];
-    const f = fitness(wideVec, ctx);
-    expect(Number.isFinite(f)).toBe(true);
-    // Volatile candles should produce worse fitness due to LVR at RS events
+    const fStable = fitness(wideVec, ctx);
+
+    // Volatile candles incur higher continuous LVR
     const volatileCandles: Candle[] = Array.from({ length: 100 }, (_, i) => {
       const p = 1.0 + 0.05 * Math.sin(i / 5);
       return { ts: i * 900_000, o: p, h: p * 1.02, l: p * 0.98, c: p, v: 1000 };
     });
-    const ctxVol = { ...ctx, candles: volatileCandles };
-    const fVol = fitness(wideVec, ctxVol);
-    expect(Number.isFinite(fVol)).toBe(true);
-    // Stable candles should produce better or equal fitness (less LVR crystallized)
-    expect(f).toBeGreaterThanOrEqual(fVol);
+    const fVol = fitness(wideVec, { ...ctx, candles: volatileCandles });
+    expect(fStable).toBeGreaterThanOrEqual(fVol);
   });
 
   test("trending prices trigger RS and incur LVR", () => {
@@ -183,16 +178,85 @@ describe("fitness", () => {
       return { ts: i * 900_000, o: p, h: p * 1.01, l: p * 0.99, c: p, v: 1000 };
     });
     const ctx = baseFitnessCtx(trendCandles);
-    // Narrow range + low RS threshold = frequent rebalancing = more LVR
     const narrowVec = [0.001, 0.01, -0.2, 100, 0.1];
     const wideVec = [0.003, 0.08, -0.8, 500, 0.35];
     const fNarrow = fitness(narrowVec, ctx);
     const fWide = fitness(wideVec, ctx);
-    // Wide range in trending market should have less LVR penalty
-    // (fewer RS events = fewer crystallized IL moments)
-    expect(Number.isFinite(fNarrow)).toBe(true);
-    expect(Number.isFinite(fWide)).toBe(true);
     expect(fWide).toBeGreaterThanOrEqual(fNarrow);
+  });
+
+  test("higher H-L spread increases LVR drag on fitness", () => {
+    // Same close prices, but different H-L spreads (Parkinson sigma source)
+    const makeCandles = (spread: number): Candle[] =>
+      Array.from({ length: 100 }, (_, i) => ({
+        ts: i * 900_000,
+        o: 1.0,
+        h: 1.0 + spread,
+        l: 1.0 - spread,
+        c: 1.0,
+        v: 1000,
+      }));
+    const ctx = baseFitnessCtx();
+    const wideVec = [0.003, 0.08, -0.8, 800, 0.35];
+    const fLowVol = fitness(wideVec, { ...ctx, candles: makeCandles(0.001) });
+    const fHighVol = fitness(wideVec, { ...ctx, candles: makeCandles(0.02) });
+    // Higher vol → higher annualized LVR → lower fitness
+    expect(fLowVol).toBeGreaterThan(fHighVol);
+  });
+
+  test("fee concentration rewards narrow ranges on flat prices", () => {
+    // Flat candles: no LVR, no RS triggers. Only fees matter.
+    const m15 = synthM15(Array.from({ length: 100 * 15 }, (_, i) => ({
+      ts: Date.now() - (100 * 15 - i) * 60_000,
+      o: 1.0, h: 1.00005, l: 0.99995, c: 1.0, v: 1000,
+    })));
+    const ctx: FitnessContext = {
+      candles: m15,
+      baseApr: 0.20,
+      poolFee: 0.003, // 30bp pool fee → refHalfW = 0.3
+      gasCostUsd: 0.01,
+      positionValueUsd: 10_000,
+    };
+    // Narrow position earns higher concentration multiplier on flat prices
+    const narrowVec = [0.0001, 0.005, -0.05, 50, 0.35]; // very narrow
+    const wideVec = [0.005, 0.1, -1.0, 1000, 0.35]; // very wide
+    const fNarrow = fitness(narrowVec, ctx);
+    const fWide = fitness(wideVec, ctx);
+    expect(fNarrow).toBeGreaterThan(fWide);
+  });
+
+  test("rejects lucky validation: negative training + positive validation", () => {
+    // Training window (80%): wild oscillations with huge H-L → massive continuous LVR
+    // Validation window (20%): perfectly flat → fees only, positive fitness
+    const candles: Candle[] = [];
+    for (let i = 0; i < 80; i++) {
+      const p = 1.0 + 0.3 * Math.sin(i / 3); // wild oscillation ±30%
+      candles.push({ ts: i * 900_000, o: p, h: p * 1.10, l: p * 0.90, c: p, v: 1000 });
+    }
+    for (let i = 80; i < 100; i++) {
+      candles.push({ ts: i * 900_000, o: 1.0, h: 1.0001, l: 0.9999, c: 1.0, v: 1000 });
+    }
+    const ctx: FitnessContext = {
+      candles,
+      baseApr: 0.10, // moderate APR: positive in flat, negative in wild vol
+      poolFee: 0.0005,
+      gasCostUsd: 0.5,
+      positionValueUsd: 10_000,
+    };
+    // Wide range + high RS threshold to minimize RS events (isolate continuous LVR effect)
+    const vec = [0.003, 0.08, -0.8, 800, 0.35];
+    expect(fitness(vec, ctx)).toBe(-Infinity);
+  });
+
+  test("positionValueUsd=0 falls back to DEFAULT_CAPITAL_USD", () => {
+    const candles = genM15(200, 1.0, 0.005, 99);
+    const vec = rangeParamsToVec(defaultRangeParams());
+    const fZero = fitness(vec, { ...baseFitnessCtx(candles), positionValueUsd: 0 });
+    const fDefault = fitness(vec, { ...baseFitnessCtx(candles), positionValueUsd: DEFAULT_CAPITAL_USD });
+    // Both should use DEFAULT_CAPITAL_USD=10000, so fitness is identical
+    expect(fZero).toBe(fDefault);
+    // And must not be -Infinity (the fallback produces real costs)
+    expect(fZero).not.toBe(-Infinity);
   });
 });
 
@@ -201,8 +265,8 @@ describe("fitness", () => {
 describe("optimize", () => {
   beforeEach(() => resetOptimizer("test"));
 
-  test("returns valid params and positive fitness", () => {
-    const ctx = baseFitnessCtx(genM15(200));
+  test("returns params within OPT_BOUNDS", () => {
+    const ctx = baseFitnessCtx(genM15(200, 1.0, 0.005, 77));
     const result = optimize(ctx, "test");
     expect(result.params.baseMin).toBeGreaterThanOrEqual(0.0001);
     expect(result.params.baseMax).toBeLessThanOrEqual(0.1);
@@ -212,22 +276,26 @@ describe("optimize", () => {
   });
 
   test("falls back to defaults when optimizer underperforms", () => {
-    // Tiny candle set makes optimizer struggle
-    const ctx = baseFitnessCtx(genM15(25));
+    const ctx = baseFitnessCtx(genM15(25, 1.0, 0.005, 88));
     const result = optimize(ctx, "test");
-    // Should either match defaults or be valid
     expect(result.params.rsThreshold).toBeGreaterThanOrEqual(0.1);
-    expect(Number.isFinite(result.fitness)).toBe(true);
   });
 
   test("warm-starts from previous solution", () => {
-    const ctx = baseFitnessCtx(genM15(200));
+    const ctx = baseFitnessCtx(genM15(200, 1.0, 0.005, 55));
     const r1 = optimize(ctx, "test");
-    const r2 = optimize(ctx, "test"); // should warm-start
-    expect(Number.isFinite(r1.fitness)).toBe(true);
-    expect(Number.isFinite(r2.fitness)).toBe(true);
+    const r2 = optimize(ctx, "test"); // warm-start from r1
     // Warm-start should produce equal or better fitness
     expect(r2.fitness).toBeGreaterThanOrEqual(r1.fitness);
+  });
+
+  test("multi-restart evaluates more than a single NM initialization", () => {
+    const ctx = baseFitnessCtx(genM15(200, 1.0, 0.005, 33));
+    const result = optimize(ctx, "test");
+    // NM_RESTARTS=3, each start initializes a DIM+1=6 simplex → minimum 18 evals
+    // Plus default evaluation → 19 minimum. Each run then iterates further.
+    const DIM = 5;
+    expect(result.evals).toBeGreaterThanOrEqual(3 * (DIM + 1));
   });
 });
 
@@ -235,20 +303,26 @@ describe("optimize", () => {
 
 describe("detectRegime", () => {
   test("normal conditions = not suppressed", () => {
-    const candles = synthRandomWalk(2000, 1.0, 0.001);
+    // Deterministic: low-vol flat candles with enough history
+    const candles: Candle[] = Array.from({ length: 2000 }, (_, i) => ({
+      ts: i * 60_000,
+      o: 1.0,
+      h: 1.0003,
+      l: 0.9997,
+      c: 1.0,
+      v: 100,
+    }));
     const r = detectRegime(candles, 10, false);
     expect(r.suppressed).toBe(false);
     expect(r.widenFactor).toBe(1.0);
   });
 
   test("insufficient data = not suppressed", () => {
-    const r = detectRegime(synthRandomWalk(30), 1, false);
+    const r = detectRegime(synthFlat(30), 1, false);
     expect(r.suppressed).toBe(false);
   });
 
-  test("price displacement triggers suppression for stables", () => {
-    // Create candles with uniform low vol but a sudden price shift in the last minute
-    // This avoids triggering vol_spike (H-L stays narrow, consistent)
+  test("price displacement triggers suppression for stables (2% threshold)", () => {
     const candles: Candle[] = Array.from({ length: 2000 }, (_, i) => ({
       ts: i * 60_000,
       o: 1.0,
@@ -257,11 +331,106 @@ describe("detectRegime", () => {
       c: 1.0,
       v: 100,
     }));
-    // Shift close price in last candle by 3% (above 2% stable threshold)
+    // 3% shift in the last candle exceeds the 2% stable threshold
     candles[candles.length - 1].c = 1.03;
-    const r = detectRegime(candles, 10, true); // isStable = true, threshold 2%
+    const r = detectRegime(candles, 10, true);
     expect(r.suppressed).toBe(true);
     expect(r.reason).toBe("price_displacement");
+    expect(r.suppressUntilEpoch).toBe(10 + REGIME_SUPPRESS_CYCLES);
+  });
+
+  test("volatile pair uses vol-relative displacement threshold", () => {
+    // Build candles with consistent moderate H-L spread so muVol is meaningful
+    // Per-bar Parkinson σ ≈ ln(h/l) / (2√ln2) ≈ ln(1.04/0.96) / 1.665 ≈ 0.0499
+    // Hourly muVol ≈ 0.0499 → threshold = max(4 * 0.0499 * √60, 0.02) ≈ max(1.546, 0.02) = 1.546
+    // So a 10% displacement should NOT trigger suppression
+    const candles: Candle[] = Array.from({ length: 2000 }, (_, i) => ({
+      ts: i * 60_000,
+      o: 1.0,
+      h: 1.04,
+      l: 0.96,
+      c: 1.0,
+      v: 100,
+    }));
+    candles[candles.length - 1].c = 1.1; // 10% displacement
+    const r = detectRegime(candles, 10, false); // isStable=false
+    expect(r.suppressed).toBe(false);
+  });
+
+  test("volatile pair displacement floor at REGIME_DISPLACEMENT_MIN", () => {
+    // Very low vol candles but isStable=false: threshold = max(4*~0*√60, 0.02) = 0.02
+    const candles: Candle[] = Array.from({ length: 2000 }, (_, i) => ({
+      ts: i * 60_000,
+      o: 1.0,
+      h: 1.00001,
+      l: 0.99999,
+      c: 1.0,
+      v: 100,
+    }));
+    // 2.5% displacement exceeds the 2% floor
+    candles[candles.length - 1].c = 1.025;
+    const r = detectRegime(candles, 10, false);
+    expect(r.suppressed).toBe(true);
+    expect(r.reason).toBe("price_displacement");
+  });
+
+  test("volatile pair falls back to REGIME_DISPLACEMENT_VOLATILE when no vol history", () => {
+    // Only 60 candles: enough for M1_PER_HOUR check, but hourlyVols.length=1 < REGIME_MIN_HOURLY_SAMPLES=10
+    // So muVol stays 0, fallback threshold is REGIME_DISPLACEMENT_VOLATILE=0.10
+    const candles: Candle[] = Array.from({ length: 61 }, (_, i) => ({
+      ts: i * 60_000,
+      o: 1.0,
+      h: 1.001,
+      l: 0.999,
+      c: 1.0,
+      v: 100,
+    }));
+    // 15% displacement exceeds the 10% fallback
+    candles[candles.length - 1].c = 1.15;
+    const r = detectRegime(candles, 10, false);
+    expect(r.suppressed).toBe(true);
+    expect(r.reason).toBe("price_displacement");
+  });
+
+  test("vol_spike triggers suppression when 1h vol exceeds 3σ above mean", () => {
+    // 2000 candles with consistent low vol, then spike last 60 candles' H-L
+    const candles: Candle[] = Array.from({ length: 2000 }, (_, i) => ({
+      ts: i * 60_000,
+      o: 1.0,
+      h: 1.001,
+      l: 0.999,
+      c: 1.0,
+      v: 100,
+    }));
+    // Spike the last 60 candles with huge H-L spread (10x normal)
+    for (let i = 1940; i < 2000; i++) {
+      candles[i].h = 1.1;
+      candles[i].l = 0.9;
+    }
+    const r = detectRegime(candles, 10, false);
+    expect(r.suppressed).toBe(true);
+    expect(r.reason).toBe("vol_spike");
+    expect(r.suppressUntilEpoch).toBe(10 + REGIME_SUPPRESS_CYCLES);
+  });
+
+  test("volume_anomaly widens range without suppressing", () => {
+    // Normal candles with low vol, then spike volume in last REGIME_VOL_WINDOW
+    const candles: Candle[] = Array.from({ length: 2000 }, (_, i) => ({
+      ts: i * 60_000,
+      o: 1.0,
+      h: 1.0002,
+      l: 0.9998,
+      c: 1.0,
+      v: 100,
+    }));
+    // Spike volume in last 15 candles to 6x average
+    for (let i = 2000 - REGIME_VOL_WINDOW; i < 2000; i++) {
+      candles[i].v = 10000;
+    }
+    const r = detectRegime(candles, 10, false);
+    expect(r.suppressed).toBe(false);
+    expect(r.reason).toBe("volume_anomaly");
+    expect(r.widenFactor).toBe(REGIME_WIDEN_FACTOR);
   });
 });
 

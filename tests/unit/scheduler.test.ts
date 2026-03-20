@@ -1,10 +1,6 @@
-import { describe, expect, test, beforeAll } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { DEFAULT_FORCE_PARAMS } from "../../src/config/params";
 import { mergeForceParams } from "../../src/scheduler";
-import { silenceLog } from "../helpers";
-
-// Silence log output during tests
-beforeAll(silenceLog);
 
 describe("mergeForceParams", () => {
   test("returns defaults when no partial provided", () => {

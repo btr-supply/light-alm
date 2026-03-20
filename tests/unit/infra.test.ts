@@ -87,6 +87,55 @@ describe("Redis: lock primitives", () => {
   });
 });
 
+describe("Redis: exchange rate limiter", () => {
+  test("reserveExchangeSlot serializes calls to same exchange", async () => {
+    const result = await withRedis(async (redis) => {
+      const { reserveExchangeSlot } = await import("../../src/infra/redis");
+      const exchange = `test-ex-${Date.now()}`;
+      const interval = 200;
+
+      // First call gets immediate slot (wait=0)
+      const wait1 = await reserveExchangeSlot(redis, exchange, interval);
+      expect(wait1).toBe(0);
+
+      // Second call must wait ~200ms
+      const wait2 = await reserveExchangeSlot(redis, exchange, interval);
+      expect(wait2).toBeGreaterThanOrEqual(interval - 50); // small clock drift tolerance
+      expect(wait2).toBeLessThanOrEqual(interval + 50);
+
+      // Third call stacks on top of second
+      const wait3 = await reserveExchangeSlot(redis, exchange, interval);
+      expect(wait3).toBeGreaterThanOrEqual(interval - 50);
+
+      // Cleanup
+      await redis.del(`btr:ratelimit:exchange:${exchange}`);
+      return true;
+    });
+    if (result === null) console.log("  Skipping (Redis unavailable)");
+  });
+
+  test("different exchanges get independent slots", async () => {
+    const result = await withRedis(async (redis) => {
+      const { reserveExchangeSlot } = await import("../../src/infra/redis");
+      const ts = Date.now();
+      const exA = `test-exA-${ts}`;
+      const exB = `test-exB-${ts}`;
+
+      const waitA = await reserveExchangeSlot(redis, exA, 200);
+      const waitB = await reserveExchangeSlot(redis, exB, 200);
+
+      // Both should get immediate slots since they're independent
+      expect(waitA).toBe(0);
+      expect(waitB).toBe(0);
+
+      await redis.del(`btr:ratelimit:exchange:${exA}`);
+      await redis.del(`btr:ratelimit:exchange:${exB}`);
+      return true;
+    });
+    if (result === null) console.log("  Skipping (Redis unavailable)");
+  });
+});
+
 describe("O2: client buffering", () => {
   test("flush resolves when called", async () => {
     const url = process.env.O2_URL;

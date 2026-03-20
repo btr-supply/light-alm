@@ -1,23 +1,17 @@
 import { describe, expect, test } from "bun:test";
+import { cap, errMsg, fmtPct as pct, fmtUsd as usd } from "../../shared/format";
 import {
-  cap,
   mean,
   std,
   sma,
   rsi,
-  pct,
-  usd,
   retry,
   RateLimiter,
   sortTokens,
   sortTokensWithAmounts,
   withFallback,
   isValidLogLevel,
-  errMsg,
 } from "../../src/utils";
-import { silenceLog } from "../helpers";
-
-silenceLog();
 
 describe("cap", () => {
   test("clamps below", () => expect(cap(-5, 0, 100)).toBe(0));

@@ -1,7 +1,11 @@
+// Skip unless INTEGRATION=true - these hit real Binance/Bybit APIs
+const RUN_INTEGRATION = process.env.INTEGRATION === "true";
+const describeIntegration = RUN_INTEGRATION ? describe : describe.skip;
+
 import { describe, expect, test } from "bun:test";
 import { fetchCandles } from "../../src/data/ohlc";
 
-describe("OHLC via ccxt (M1)", () => {
+describeIntegration("OHLC via ccxt (M1)", () => {
   test("binance: USDC/USDT M1", async () => {
     const since = Date.now() - 4 * 60 * 60 * 1000; // 4h ago
     const candles = await fetchCandles("binance", "USDC/USDT", since, 10);

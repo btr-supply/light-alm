@@ -9,45 +9,10 @@ import { randomBytes } from "crypto";
 import { computeForces } from "../../src/strategy/forces";
 import { computeRange } from "../../src/strategy/range";
 import { checkKillSwitches, defaultRangeParams } from "../../src/strategy/optimizer";
-import { POSITION_VALUE_USD } from "../../src/config/params";
-import { synthFromCloses, synthRandomWalk, synthM15 } from "../helpers";
+import { DEFAULT_CAPITAL_USD } from "../../src/config/params";
+import { synthFromCloses, synthRandomWalk, synthM15, createMockStore } from "../helpers";
 
 const TEST_PAIR = `E2E-${randomBytes(4).toString("hex")}`;
-
-// ---- In-memory mock DragonflyStore ----
-
-function createMockStore() {
-  const positions = new Map<string, any>();
-  let optimizerState: { vec: number[]; fitness: number } | null = null;
-  let epoch = 0;
-  let regimeSuppress = 0;
-  let candleCursor = 0;
-
-  return {
-    savePosition: async (p: any) => { positions.set(p.id, p); },
-    getPositions: async () => [...positions.values()],
-    deletePosition: async (id: string) => { positions.delete(id); },
-    getOptimizerState: async () => optimizerState,
-    saveOptimizerState: async (vec: number[], fitness: number) => {
-      optimizerState = { vec, fitness };
-    },
-    getEpoch: async () => epoch,
-    incrementEpoch: async () => ++epoch,
-    getRegimeSuppressUntil: async () => regimeSuppress,
-    setRegimeSuppressUntil: async (e: number) => { regimeSuppress = e; },
-    getLatestCandleTs: async () => candleCursor,
-    setLatestCandleTs: async (ts: number) => { candleCursor = ts; },
-    deleteAll: async () => {
-      positions.clear();
-      optimizerState = null;
-      epoch = 0;
-      regimeSuppress = 0;
-      candleCursor = 0;
-    },
-    // Expose internals for assertions
-    _getOptimizerState: () => optimizerState,
-  };
-}
 
 describe("E2E: scheduler cycle integration", () => {
   let store: ReturnType<typeof createMockStore>;
@@ -127,7 +92,7 @@ describe("E2E: scheduler cycle integration", () => {
 
       const ks = checkKillSwitches(
         { trailingYields, rsTimestamps, trailing24hGasUsd: 0 },
-        POSITION_VALUE_USD,
+        DEFAULT_CAPITAL_USD,
         defaultRangeParams(),
       );
       expect(ks.useDefaults).toBe(false);
@@ -136,15 +101,13 @@ describe("E2E: scheduler cycle integration", () => {
     test("excessive RS -> kill-switch triggers", () => {
       const now = Date.now();
       // 10 RS in 4 hours (excessive)
-      const rsTimestamps = Array.from({ length: 10 }, (_, i) =>
-        now - (4 - i * 0.25) * 3600_000,
-      );
+      const rsTimestamps = Array.from({ length: 10 }, (_, i) => now - (4 - i * 0.25) * 3600_000);
 
       expect(rsTimestamps.length).toBeGreaterThan(8);
 
       const ks = checkKillSwitches(
         { trailingYields: [], rsTimestamps, trailing24hGasUsd: 0 },
-        POSITION_VALUE_USD,
+        DEFAULT_CAPITAL_USD,
         defaultRangeParams(),
       );
       expect(ks.useDefaults).toBe(true);

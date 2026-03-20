@@ -1,10 +1,7 @@
-import { describe, expect, test, beforeAll, beforeEach } from "bun:test";
-import { TF_MS, BACKFILL_DAYS } from "../../src/config/params";
+import { describe, expect, test, beforeEach } from "bun:test";
+import { TF_MS, CANDLE_BUFFER_DAYS } from "../../src/config/params";
 import { mergeWeightedCandles } from "../../src/data/ohlc";
 import type { Candle } from "../../src/types";
-import { silenceLog } from "../helpers";
-
-beforeAll(silenceLog);
 
 // ---- fetchWeightedCandles ----
 // Tests weighted average computation for multi-source candles.
@@ -115,7 +112,9 @@ function mockStore() {
   let candleCursor = 0;
   return {
     getLatestCandleTs: async () => candleCursor,
-    setLatestCandleTs: async (ts: number) => { candleCursor = ts; },
+    setLatestCandleTs: async (ts: number) => {
+      candleCursor = ts;
+    },
   };
 }
 
@@ -137,9 +136,9 @@ describe("backfill", () => {
     const latestTs = await store.getLatestCandleTs();
     expect(latestTs).toBe(0);
     const now = Date.now();
-    const since = latestTs > 0 ? latestTs + TF_MS : now - BACKFILL_DAYS * 24 * 60 * 60 * 1000;
-    // Should go back BACKFILL_DAYS
-    const expectedSince = now - BACKFILL_DAYS * 24 * 60 * 60 * 1000;
+    const since = latestTs > 0 ? latestTs + TF_MS : now - CANDLE_BUFFER_DAYS * 24 * 60 * 60 * 1000;
+    // Should go back CANDLE_BUFFER_DAYS
+    const expectedSince = now - CANDLE_BUFFER_DAYS * 24 * 60 * 60 * 1000;
     expect(Math.abs(since - expectedSince)).toBeLessThan(100);
   });
 

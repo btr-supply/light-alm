@@ -1,9 +1,12 @@
+// RPC integration tests — run by default (soft-fail on transient RPC errors)
 import { describe, expect, test } from "bun:test";
 import { POOL_REGISTRY } from "../../src/config/pools";
 import { queryPool } from "../../src/adapters/pool-query";
 import { getDexFamily } from "../../src/config/dexs";
 import { USDC, USDT } from "../../src/config/tokens";
 import { DexFamily, type PoolEntry, type TokenConfig } from "../../src/types";
+import { isTransientRpcError } from "../helpers";
+import { errMsg } from "../../shared/format";
 
 /** Check if an on-chain address matches a known pair token on the given chain */
 function isKnownPairToken(addr: `0x${string}` | undefined, chain: number): boolean {
@@ -29,47 +32,61 @@ for (const [family, entries] of byFamily) {
     for (const entry of entries) {
       const label = `${entry.dex} chain=${entry.chain} ${entry.id.slice(0, 12)}...`;
 
-      test(label, async () => {
-        const state = await queryPool(entry, pairTokens);
+      test(
+        label,
+        async () => {
+          let state;
+          try {
+            state = await queryPool(entry, pairTokens);
+          } catch (e: unknown) {
+            const msg = errMsg(e);
+            if (isTransientRpcError(msg)) {
+              console.warn(`  [SOFT-FAIL] ${label}: ${msg}`);
+              return;
+            }
+            throw e;
+          }
 
-        // Universal fields — every pool type must return these
-        expect(state.price).toBeGreaterThan(0);
-        expect(state.fee).toBeGreaterThanOrEqual(0);
-        expect(state.fee).toBeLessThan(0.05);
+          // Universal fields — every pool type must return these
+          expect(state.price).toBeGreaterThan(0);
+          expect(state.fee).toBeGreaterThanOrEqual(0);
+          expect(state.fee).toBeLessThan(0.05);
 
-        if (family === DexFamily.LB) {
-          // LB-specific: native bin fields, no CLMM fields
-          expect(state.activeId).toBeDefined();
-          expect(state.binStep).toBeDefined();
-          expect(state.activeId!).toBeGreaterThan(0);
-          expect(state.binStep!).toBeGreaterThan(0);
-          expect(state.reserveX).toBeDefined();
-          expect(state.reserveY).toBeDefined();
-          // LB should NOT have CLMM fields
-          expect(state.sqrtPriceX96).toBeUndefined();
-          expect(state.tick).toBeUndefined();
-          expect(state.liquidity).toBeUndefined();
-          console.log(
-            `  ${entry.dex} chain=${entry.chain} activeId=${state.activeId} binStep=${state.binStep} price=${state.price.toFixed(6)} fee=${(state.fee * 100).toFixed(4)}%`,
-          );
-        } else {
-          // CLMM fields (V3/V4/Algebra/Aerodrome)
-          expect(state.sqrtPriceX96).toBeDefined();
-          expect(state.sqrtPriceX96!).toBeGreaterThan(0n);
-          expect(state.tick).toBeDefined();
-          expect(state.liquidity).toBeDefined();
-          expect(state.liquidity!).toBeGreaterThan(0n);
-          console.log(
-            `  ${entry.dex} chain=${entry.chain} tick=${state.tick} price=${state.price.toFixed(6)} fee=${(state.fee * 100).toFixed(4)}% liq=${state.liquidity}`,
-          );
-        }
+          if (family === DexFamily.LB) {
+            // LB-specific: native bin fields, no CLMM fields
+            expect(state.activeId).toBeDefined();
+            expect(state.binStep).toBeDefined();
+            expect(state.activeId!).toBeGreaterThan(0);
+            expect(state.binStep!).toBeGreaterThan(0);
+            expect(state.reserveX).toBeDefined();
+            expect(state.reserveY).toBeDefined();
+            // LB should NOT have CLMM fields
+            expect(state.sqrtPriceX96).toBeUndefined();
+            expect(state.tick).toBeUndefined();
+            expect(state.liquidity).toBeUndefined();
+            console.log(
+              `  ${entry.dex} chain=${entry.chain} activeId=${state.activeId} binStep=${state.binStep} price=${state.price.toFixed(6)} fee=${(state.fee * 100).toFixed(4)}%`,
+            );
+          } else {
+            // CLMM fields (V3/V4/Algebra/Aerodrome)
+            expect(state.sqrtPriceX96).toBeDefined();
+            expect(state.sqrtPriceX96!).toBeGreaterThan(0n);
+            expect(state.tick).toBeDefined();
+            expect(state.liquidity).toBeDefined();
+            expect(state.liquidity!).toBeGreaterThan(0n);
+            console.log(
+              `  ${entry.dex} chain=${entry.chain} tick=${state.tick} price=${state.price.toFixed(6)} fee=${(state.fee * 100).toFixed(4)}% liq=${state.liquidity}`,
+            );
+          }
 
-        // V3/algebra/aerodrome: verify token0/token1 are known USDC/USDT variants
-        if (family !== DexFamily.V4 && family !== DexFamily.PCS_V4) {
-          expect(isKnownPairToken(state.token0, entry.chain)).toBe(true);
-          expect(isKnownPairToken(state.token1, entry.chain)).toBe(true);
-        }
-      }, 30_000);
+          // V3/algebra/aerodrome: verify token0/token1 are known USDC/USDT variants
+          if (family !== DexFamily.V4 && family !== DexFamily.PCS_V4) {
+            expect(isKnownPairToken(state.token0, entry.chain)).toBe(true);
+            expect(isKnownPairToken(state.token1, entry.chain)).toBe(true);
+          }
+        },
+        30_000,
+      );
     }
   });
 }

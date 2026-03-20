@@ -1,13 +1,10 @@
 import { describe, expect, test, mock, beforeAll, beforeEach, afterEach } from "bun:test";
 import { verifyCalldata, waitForArrival, lifiQuote, limiters } from "../../src/execution/swap";
 import { RateLimiter } from "../../src/utils";
-import { silenceLog } from "../helpers";
-
-// Bypass rate limiting + silence expected warnings in unit tests
+// Bypass rate limiting in unit tests
 beforeAll(() => {
   limiters.jumper = new RateLimiter(0);
   limiters.lifi = new RateLimiter(0);
-  silenceLog();
 });
 
 // -- verifyCalldata --

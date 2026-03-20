@@ -7,6 +7,7 @@ import type {
   Forces,
   TxLogEntry,
 } from "../../src/types";
+import { createMockStore } from "../helpers";
 
 // ---- Track calls ----
 const calls = {
@@ -33,23 +34,16 @@ const mockPositions: Position[] = [];
 // ---- In-memory mock DragonflyStore ----
 
 const positionsMap = new Map<string, Position>();
+const baseStore = createMockStore(positionsMap);
 
 const mockStore = {
-  savePosition: async (p: Position) => { positionsMap.set(p.id, p); },
-  getPositions: async () => mockPositions.length > 0 ? [...mockPositions] : [...positionsMap.values()],
+  ...baseStore,
+  getPositions: async () =>
+    mockPositions.length > 0 ? [...mockPositions] : [...positionsMap.values()],
   deletePosition: async (id: string) => {
     calls.deletedPositions.push(id);
     positionsMap.delete(id);
   },
-  getOptimizerState: async () => null,
-  saveOptimizerState: async () => {},
-  getEpoch: async () => 0,
-  incrementEpoch: async () => 1,
-  getRegimeSuppressUntil: async () => 0,
-  setRegimeSuppressUntil: async () => {},
-  getLatestCandleTs: async () => 0,
-  setLatestCandleTs: async () => {},
-  deleteAll: async () => { positionsMap.clear(); },
 };
 
 // Mock O2 ingest to capture tx logs

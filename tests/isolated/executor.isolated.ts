@@ -7,6 +7,7 @@ import type {
   Forces,
   TxLogEntry,
 } from "../../src/types";
+import { createMockStore } from "../helpers";
 
 // ---- Track calls for assertions ----
 const calls = {
@@ -37,23 +38,16 @@ const mockCandles = [{ ts: Date.now(), o: 1.0, h: 1.001, l: 0.999, c: 1.0, v: 10
 // ---- In-memory mock DragonflyStore ----
 
 const positionsMap = new Map<string, Position>();
+const baseStore = createMockStore(positionsMap);
 
 const mockStore = {
-  savePosition: async (p: Position) => { positionsMap.set(p.id, p); },
-  getPositions: async () => mockPositions.length > 0 ? [...mockPositions] : [...positionsMap.values()],
+  ...baseStore,
+  getPositions: async () =>
+    mockPositions.length > 0 ? [...mockPositions] : [...positionsMap.values()],
   deletePosition: async (id: string) => {
     calls.deletedPositions.push(id);
     positionsMap.delete(id);
   },
-  getOptimizerState: async () => null,
-  saveOptimizerState: async () => {},
-  getEpoch: async () => 0,
-  incrementEpoch: async () => 1,
-  getRegimeSuppressUntil: async () => 0,
-  setRegimeSuppressUntil: async () => {},
-  getLatestCandleTs: async () => 0,
-  setLatestCandleTs: async () => {},
-  deleteAll: async () => { positionsMap.clear(); },
 };
 
 // Mock O2 ingest to capture tx logs
@@ -407,8 +401,8 @@ describe("executePRA", () => {
     // args: [store, pair, alloc, range, amount0, amount1, privateKey]
     const amt0 = mintArgs[4] as bigint;
     const amt1 = mintArgs[5] as bigint;
-    expect(amt0).toBe(5000_000000n); // 50% of 10000
-    expect(amt1).toBe(5000_000000n);
+    expect(amt0).toBe(4750_000000n); // 50% * 95% (5% cash reserve) of 10000
+    expect(amt1).toBe(4750_000000n);
   });
 });
 

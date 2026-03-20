@@ -1,5 +1,7 @@
+// RPC integration tests — run by default (readFeeTier uses withFallback internally)
 import { describe, expect, test } from "bun:test";
 import { readFeeTier } from "../../src/data/fees";
+import { DEFAULT_FEE } from "../../src/config/params";
 import type { PoolConfig } from "../../src/types";
 
 // Real pools for integration testing
@@ -24,24 +26,28 @@ const QUICKSWAP_POLYGON: PoolConfig = {
 describe("on-chain fee reads", () => {
   test("readFeeTier: UniV3 ETH (standard fee)", async () => {
     const fee = await readFeeTier(UNI_V3_ETH);
-    // Typical stablecoin pool fee: 0.0001 (1bp) or 0.0005 (5bp)
     expect(fee).toBeGreaterThan(0);
     expect(fee).toBeLessThan(0.01);
-    console.log(`  Uni V3 ETH USDC-USDT fee: ${(fee * 100).toFixed(4)}%`);
+    if (fee === DEFAULT_FEE)
+      console.warn("  [FALLBACK] Uni V3 ETH returned DEFAULT_FEE (RPC may be down)");
+    else console.log(`  Uni V3 ETH USDC-USDT fee: ${(fee * 100).toFixed(4)}%`);
   }, 15_000);
 
   test("readFeeTier: UniV3 Arbitrum", async () => {
     const fee = await readFeeTier(UNI_V3_ARB);
     expect(fee).toBeGreaterThan(0);
     expect(fee).toBeLessThan(0.01);
-    console.log(`  Uni V3 ARB USDC-USDT fee: ${(fee * 100).toFixed(4)}%`);
+    if (fee === DEFAULT_FEE)
+      console.warn("  [FALLBACK] Uni V3 ARB returned DEFAULT_FEE (RPC may be down)");
+    else console.log(`  Uni V3 ARB USDC-USDT fee: ${(fee * 100).toFixed(4)}%`);
   }, 15_000);
 
   test("readFeeTier: QuickSwap Polygon (Algebra dynamic fee)", async () => {
     const fee = await readFeeTier(QUICKSWAP_POLYGON);
-    // Dynamic fees can vary; just verify it's reasonable
     expect(fee).toBeGreaterThanOrEqual(0);
     expect(fee).toBeLessThan(0.05);
-    console.log(`  QuickSwap Polygon USDC-USDT fee: ${(fee * 100).toFixed(4)}%`);
+    if (fee === DEFAULT_FEE)
+      console.warn("  [FALLBACK] QuickSwap Polygon returned DEFAULT_FEE (RPC may be down)");
+    else console.log(`  QuickSwap Polygon USDC-USDT fee: ${(fee * 100).toFixed(4)}%`);
   }, 15_000);
 });

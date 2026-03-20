@@ -39,19 +39,77 @@ export function synthHL(count: number, hl: number, base = 1.0): Candle[] {
   }));
 }
 
+/** Simple Mulberry32 PRNG: deterministic, seedable, [0, 1) output. */
+function mulberry32(seed: number): () => number {
+  let s = seed | 0;
+  return () => {
+    s = (s + 0x6d2b79f5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 /** Generate random-walk candles (optimizer tests). */
-export function synthRandomWalk(count: number, base = 1.0, vol = 0.002): Candle[] {
+export function synthRandomWalk(count: number, base = 1.0, vol = 0.002, seed?: number): Candle[] {
+  const rng = seed != null ? mulberry32(seed) : Math.random;
+  // When seeded, use a fixed epoch aligned to M15 boundaries for deterministic aggregation.
+  // When unseeded, use current time for backwards compatibility.
+  const epoch = seed != null ? 1_700_000_000_000 : Date.now();
   let price = base;
   return Array.from({ length: count }, (_, i) => {
-    const move = (Math.random() - 0.5) * 2 * vol;
+    const move = (rng() - 0.5) * 2 * vol;
     price += move;
     return {
-      ts: Date.now() - (count - i) * 60_000,
+      ts: epoch - (count - i) * 60_000,
       o: price - move / 2,
       h: price + Math.abs(move),
       l: price - Math.abs(move),
       c: price,
-      v: 1000 + Math.random() * 500,
+      v: 1000 + rng() * 500,
+    };
+  });
+}
+
+/** Generate flat candles at a fixed price with controlled H-L spread. */
+export function synthFlat(count: number, price = 1.0, spread = 0.0002): Candle[] {
+  return Array.from({ length: count }, (_, i) => ({
+    ts: Date.now() - (count - i) * 60_000,
+    o: price,
+    h: price + spread / 2,
+    l: price - spread / 2,
+    c: price,
+    v: 1000,
+  }));
+}
+
+/** Generate candles with a linear trend from `start` to `end`, with controlled H-L spread. */
+export function synthTrend(count: number, start: number, end: number, spread = 0.002): Candle[] {
+  return Array.from({ length: count }, (_, i) => {
+    const c = start + ((end - start) * i) / (count - 1);
+    return {
+      ts: Date.now() - (count - i) * 60_000,
+      o: i > 0 ? start + ((end - start) * (i - 1)) / (count - 1) : c,
+      h: c + spread / 2,
+      l: c - spread / 2,
+      c,
+      v: 1000,
+    };
+  });
+}
+
+/** Generate sinusoidal oscillation candles (deterministic, good for RS trigger tests). */
+export function synthOscillation(count: number, base = 1.0, amplitude = 0.03, period = 20): Candle[] {
+  return Array.from({ length: count }, (_, i) => {
+    const c = base + amplitude * Math.sin((2 * Math.PI * i) / period);
+    const spread = amplitude * 0.2;
+    return {
+      ts: Date.now() - (count - i) * 60_000,
+      o: base + amplitude * Math.sin((2 * Math.PI * (i - 0.5)) / period),
+      h: c + spread,
+      l: c - spread,
+      c,
+      v: 1000,
     };
   });
 }
@@ -109,20 +167,62 @@ export function makeSnapshot(overrides?: Partial<PoolSnapshot>): PoolSnapshot {
   };
 }
 
-/** Aggregate M1 candles to M15 (optimizer tests). */
-export function synthM15(m1: Candle[]): Candle[] {
-  const result: Candle[] = [];
-  for (let i = 0; i < m1.length; i += 15) {
-    const slice = m1.slice(i, i + 15);
-    if (slice.length === 0) break;
-    result.push({
-      ts: slice[0].ts,
-      o: slice[0].o,
-      h: Math.max(...slice.map((c) => c.h)),
-      l: Math.min(...slice.map((c) => c.l)),
-      c: slice[slice.length - 1].c,
-      v: slice.reduce((s, c) => s + c.v, 0),
-    });
-  }
-  return result;
+/** Check if an error message indicates a transient RPC failure (rate-limit, timeout, network). */
+export function isTransientRpcError(msg: string): boolean {
+  const patterns = [
+    "ETIMEDOUT",
+    "ECONNREFUSED",
+    "ECONNRESET",
+    "ENOTFOUND",
+    "429",
+    "502",
+    "503",
+    "504",
+    "fetch failed",
+    "timeout",
+    "rate limit",
+    "too many requests",
+    "getaddrinfo",
+    "socket hang up",
+  ];
+  const lower = msg.toLowerCase();
+  return patterns.some((p) => lower.includes(p.toLowerCase()));
 }
+
+/** Create a mock DragonflyStore for isolated tests. */
+export function createMockStore(positionsMap = new Map<string, any>()) {
+  let optimizerState: { vec: number[]; fitness: number } | null = null;
+  let epoch = 0;
+  let regimeSuppress = 0;
+  let candleCursor = 0;
+
+  return {
+    getPositions: () => Promise.resolve([...positionsMap.values()]),
+    savePosition: (p: any) => { positionsMap.set(p.id, p); return Promise.resolve(); },
+    deletePosition: (id: string) => { positionsMap.delete(id); return Promise.resolve(); },
+    getOptimizerState: () => Promise.resolve(optimizerState),
+    saveOptimizerState: (vec: number[], fitness: number) => {
+      optimizerState = { vec, fitness };
+      return Promise.resolve();
+    },
+    getEpoch: () => Promise.resolve(epoch),
+    incrementEpoch: () => Promise.resolve(++epoch),
+    getRegimeSuppressUntil: () => Promise.resolve(regimeSuppress),
+    setRegimeSuppressUntil: (e: number) => { regimeSuppress = e; return Promise.resolve(); },
+    getLatestCandleTs: () => Promise.resolve(candleCursor),
+    setLatestCandleTs: (ts: number) => { candleCursor = ts; return Promise.resolve(); },
+    deleteAll: () => {
+      positionsMap.clear();
+      optimizerState = null;
+      epoch = 0;
+      regimeSuppress = 0;
+      candleCursor = 0;
+      return Promise.resolve();
+    },
+  };
+}
+
+/** Aggregate M1 candles to M15 (delegates to production aggregateCandles). */
+import { aggregateCandles } from "../shared/format";
+import { M15_MS } from "../src/config/params";
+export const synthM15 = (m1: Candle[]) => aggregateCandles(m1, M15_MS);
