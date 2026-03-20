@@ -15,7 +15,7 @@ async function main() {
 
   if (command === "--help" || command === "-h") {
     console.log(`
-BTR Light ALM - Autonomous Liquidity Manager
+BTR Prime - Autonomous Liquidity Manager
 
 Usage: bun src/index.ts [command]
 

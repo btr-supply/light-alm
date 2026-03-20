@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@btr-supply/light-alm",
+      "name": "@btr-supply/btr-prime",
       "dependencies": {
         "ccxt": "^4.4.0",
         "viem": "^2.23.0",

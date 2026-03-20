@@ -1,12 +1,12 @@
-# BTR Light ALM
+# BTR Prime
 
 Autonomous concentrated liquidity management across 7 EVM chains, 20+ DEXes, and hundreds of pools.
-Light port of BTR Supply ALM v1, full TypeScript, trimmed down and without vault infra.
+Full TypeScript, trimmed down and without vault infra.
 The EOAs can easily be replaced by [Smart Accounts](docs/migration-smart-accounts.md) to turn into a trustless protocol.
 
 ## Overview
 
-BTR Light ALM manages Uniswap V3-style liquidity positions with zero human intervention. Each strategy runs a 5-step cycle every 15 minutes:
+BTR Prime manages Uniswap V3-style liquidity positions with zero human intervention. Each strategy runs a 5-step cycle every 15 minutes:
 
 ```mermaid
 flowchart LR

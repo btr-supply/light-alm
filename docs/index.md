@@ -1,4 +1,4 @@
-# BTR Light ALM Documentation
+# BTR Prime Documentation
 
 ## General
 

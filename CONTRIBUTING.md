@@ -1,4 +1,4 @@
-# Contributing to BTR Light ALM
+# Contributing to BTR Prime
 
 ## Development Setup
 

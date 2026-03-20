@@ -26,7 +26,7 @@ Copy `.env.example` to `.env` and configure:
 | `INTERVAL_SEC` | no | Scheduler cycle in seconds (default: `900`) |
 | `ORCHESTRATOR_MODE` | no | `docker` (container-per-worker) or `process` (default) |
 | `DOCKER_HOST` | no | Docker socket/proxy URL (default: `/var/run/docker.sock`) |
-| `DOCKER_NETWORK` | no | Docker network for workers (default: `agentic-alm_btr-net`) |
+| `DOCKER_NETWORK` | no | Docker network for workers (default: `btr-prime_btr-net`) |
 | `DOCKER_IMAGE` | no | Image for worker containers (default: `btr-alm`) |
 
 ## Dev Mode
