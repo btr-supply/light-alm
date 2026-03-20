@@ -4,7 +4,7 @@ import { ABIS, getDexFamily, V4_STATE_VIEW, PCS_V4_CL_MANAGER } from "../config/
 import { requireAddress } from "../execution/tx";
 import { ZERO_ADDR, LB_BIN_ID_OFFSET, LB_BIN_STEP_DIVISOR, FEE_PRECISION } from "../config/params";
 import { getPublicClient } from "../execution/tx";
-import { log, sortTokens } from "../utils";
+import { sortTokens } from "../utils";
 
 /** Convert sqrtPriceX96 → token1/token0 price. */
 function sqrtPriceX96ToPrice(sqrtPriceX96: bigint): number {
@@ -183,28 +183,4 @@ export async function queryPool(
     default:
       throw new Error(`Unsupported DEX family: ${family}`);
   }
-}
-
-export async function queryAllPools(
-  pools: PoolEntry[],
-  pairTokens?: [TokenConfig, TokenConfig],
-): Promise<Map<string, PoolState>> {
-  const results = new Map<string, PoolState>();
-  const settled = await Promise.allSettled(
-    pools.map(async (p) => {
-      const state = await queryPool(p, pairTokens);
-      return { key: `${p.chain}:${p.id}`, state };
-    }),
-  );
-  for (let i = 0; i < settled.length; i++) {
-    const r = settled[i];
-    if (r.status === "fulfilled") {
-      results.set(r.value.key, r.value.state);
-    } else {
-      log.warn(
-        `Pool query failed [${pools[i].dex} ${pools[i].chain}:${pools[i].id.slice(0, 10)}]: ${r.reason}`,
-      );
-    }
-  }
-  return results;
 }
