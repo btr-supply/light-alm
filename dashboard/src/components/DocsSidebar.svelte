@@ -1,6 +1,5 @@
 <script lang="ts">
   import type { NavNode } from "$lib/docs";
-  import { SMALL, TEXT } from "$lib/theme";
 
   interface Props {
     tree: NavNode[];
@@ -15,19 +14,19 @@
   {#each tree as node}
     {#if node.children}
       <div class="mt-3 first:mt-0">
-        <span class="{SMALL} uppercase tracking-wider {TEXT.label} px-2 block mb-1">{node.label}</span>
+        <span class="text-2xs uppercase tracking-wider text-zinc-500 px-2 block mb-1">{node.label}</span>
         {#each node.children as child}
           <button
-            class="w-full text-left px-3 py-1.5 rounded text-xs transition-colors
-              {currentPageId === child.id ? 'bg-zinc-800 text-zinc-100' : TEXT.secondary + ' hover:bg-zinc-800/50'}"
+            class="list-item"
+            data-active={currentPageId === child.id || undefined}
             onclick={() => child.id && onSelect(child.id)}
           >{child.label}</button>
         {/each}
       </div>
     {:else}
       <button
-        class="w-full text-left px-3 py-1.5 rounded text-xs transition-colors
-          {currentPageId === node.id ? 'bg-zinc-800 text-zinc-100' : TEXT.secondary + ' hover:bg-zinc-800/50'}"
+        class="list-item"
+        data-active={currentPageId === node.id || undefined}
         onclick={() => node.id && onSelect(node.id)}
       >{node.label}</button>
     {/if}

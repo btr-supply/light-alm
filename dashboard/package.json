@@ -11,7 +11,8 @@
   "dependencies": {
     "@btr-supply/shared": "workspace:*",
     "lightweight-charts": "^5.0.0",
-    "minisearch": "^7.0.0"
+    "minisearch": "^7.0.0",
+    "paneforge": "^1.0.2"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.0.0",

@@ -59,10 +59,7 @@ function processMath(md: string): string {
 function extractHeadings(md: string): Heading[] {
   const result: Heading[] = [];
   for (const m of md.matchAll(/^(#{1,4})\s+(.+)$/gm)) {
-    const text = m[2]
-      .replace(/\*\*/g, "")
-      .replace(/`/g, "")
-      .trim();
+    const text = m[2].replace(/\*\*/g, "").replace(/`/g, "").trim();
     result.push({ level: m[1].length, text, slug: slugify(text) });
   }
   return result;

@@ -1,25 +1,24 @@
 <script lang="ts">
-  import type MiniSearch from "minisearch";
-  import { searchDocs, type DocPage } from "$lib/docs";
-  import { TEXT } from "$lib/theme";
+  import { getSearchIndex, searchDocs } from "$lib/docs";
 
   interface Props {
-    searchIndex: MiniSearch<DocPage>;
     onSelect: (id: string) => void;
   }
 
-  let { searchIndex, onSelect }: Props = $props();
+  let { onSelect }: Props = $props();
 
   let dialogEl: HTMLDialogElement;
   let query = $state("");
-  let results = $derived(searchDocs(searchIndex, query));
+  let searchIdx = $state<Awaited<ReturnType<typeof getSearchIndex>> | null>(null);
+  let results = $derived(searchIdx ? searchDocs(searchIdx, query) : []);
   let selectedIdx = $state(0);
 
   $effect(() => { results; selectedIdx = 0; });
 
-  export function open() {
+  export async function open() {
     query = "";
     dialogEl?.showModal();
+    if (!searchIdx) searchIdx = await getSearchIndex();
   }
 
   function close() {
@@ -32,10 +31,10 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    if (e.key === "ArrowDown") {
+    if (e.key === "ArrowDown" && results.length > 0) {
       e.preventDefault();
       selectedIdx = Math.min(selectedIdx + 1, results.length - 1);
-    } else if (e.key === "ArrowUp") {
+    } else if (e.key === "ArrowUp" && results.length > 0) {
       e.preventDefault();
       selectedIdx = Math.max(selectedIdx - 1, 0);
     } else if (e.key === "Enter" && results[selectedIdx]) {
@@ -58,18 +57,18 @@
   onkeydown={handleKeydown}
   onclick={(e) => { if (e.target === dialogEl) close(); }}
 >
-  <div class="bg-zinc-900 border border-zinc-700 rounded-lg shadow-2xl overflow-hidden">
-    <div class="flex items-center gap-2 px-4 py-3 border-b border-zinc-800">
-      <span class="{TEXT.label} text-sm">Search docs</span>
+  <div class="bg-zinc-900 border border-zinc-800 shadow-2xl overflow-hidden">
+    <div class="flex items-center gap-2 px-3 py-2 border-b border-zinc-800">
+      <span class="text-zinc-500 text-sm">Search docs</span>
       <!-- svelte-ignore a11y_autofocus -->
       <input
         type="text"
         bind:value={query}
         placeholder="Type to search..."
-        class="flex-1 bg-transparent text-sm text-zinc-100 outline-none placeholder-zinc-600"
+        class="flex-1 bg-transparent text-sm text-zinc-200 outline-none placeholder-zinc-600"
         autofocus
       />
-      <kbd class="text-[10px] {TEXT.dim} border border-zinc-700 rounded px-1.5 py-0.5">ESC</kbd>
+      <kbd class="text-2xs text-zinc-600 border border-zinc-800 px-1.5 py-0.5">ESC</kbd>
     </div>
 
     {#if results.length > 0}
@@ -77,20 +76,22 @@
         {#each results as result, i}
           <li>
             <button
-              class="w-full text-left px-4 py-2 text-xs flex items-center gap-2 transition-colors
-                {i === selectedIdx ? 'bg-zinc-800 text-zinc-100' : TEXT.secondary + ' hover:bg-zinc-800/50'}"
+              class="list-item px-4 flex items-center gap-2"
+              data-active={i === selectedIdx || undefined}
               onclick={() => pick(result.id)}
             >
               <span class="font-medium">{result.title}</span>
-              <span class="{TEXT.dim} text-[10px]">{result.id}</span>
+              <span class="text-zinc-600 text-2xs">{result.id}</span>
             </button>
           </li>
         {/each}
       </ul>
+    {:else if !searchIdx}
+      <div class="px-4 py-3 text-center text-xs text-zinc-600">Loading search index...</div>
     {:else if query.length >= 2}
-      <div class="px-4 py-6 text-center text-xs {TEXT.dim}">No results for &ldquo;{query}&rdquo;</div>
+      <div class="px-4 py-3 text-center text-xs text-zinc-600">No results for &ldquo;{query}&rdquo;</div>
     {:else}
-      <div class="px-4 py-6 text-center text-xs {TEXT.dim}">Start typing to search documentation</div>
+      <div class="px-4 py-3 text-center text-xs text-zinc-600">Start typing to search documentation</div>
     {/if}
   </div>
 </dialog>
