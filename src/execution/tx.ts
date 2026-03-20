@@ -3,6 +3,7 @@ import {
   createWalletClient,
   defineChain,
   encodeFunctionData,
+  fallback,
   http,
   type Account,
   type Chain,
@@ -10,7 +11,22 @@ import {
   type WalletClient,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { mainnet, bsc, polygon, base, arbitrum, avalanche } from "viem/chains";
+import {
+  mainnet,
+  bsc,
+  polygon,
+  base,
+  arbitrum,
+  avalanche,
+  optimism,
+  gnosis,
+  fantom,
+  moonbeam,
+  mantle,
+  linea,
+  scroll,
+  blast,
+} from "viem/chains";
 import type { ChainId, PairConfig } from "../types";
 import { chains, getChain } from "../config/chains";
 import { ABIS } from "../config/dexs";
@@ -22,60 +38,125 @@ import {
   MAX_UINT160,
   PERMIT2_EXPIRY_SEC,
 } from "../config/params";
-import { log, errMsg } from "../utils";
+import { errMsg } from "../../shared/format";
+import { log } from "../utils";
+
+// ---- Viem chain definitions ----
+
+const sonic = defineChain({
+  id: 146,
+  name: "Sonic",
+  nativeCurrency: { name: "Sonic", symbol: "S", decimals: 18 },
+  rpcUrls: { default: { http: ["https://rpc.soniclabs.com"] } },
+});
 
 const hyperEvm = defineChain({
   id: 999,
   name: "HyperEVM",
   nativeCurrency: { name: "HYPE", symbol: "HYPE", decimals: 18 },
-  rpcUrls: { default: { http: [chains[999].rpc] } },
+  rpcUrls: { default: { http: chains[999].rpcs } },
 });
 
-// Shared viem chain objects by chainId (single source of truth)
-const VIEM_CHAINS: Record<number, Chain> = {
+const KNOWN_VIEM_CHAINS: Record<number, Chain> = {
   1: mainnet,
+  10: optimism,
   56: bsc,
+  100: gnosis,
   137: polygon,
+  146: sonic,
+  238: blast,
+  250: fantom,
+  999: hyperEvm,
+  1284: moonbeam,
+  5000: mantle,
   8453: base,
   42161: arbitrum,
   43114: avalanche,
-  999: hyperEvm,
+  59144: linea,
+  534352: scroll,
 };
 
-// Cache clients per (chainId, pk) combo
-const publicClients = new Map<number, PublicClient>();
-const walletClients = new Map<string, WalletClient>();
+/** Get or construct a viem Chain object for any chainId. */
+export function getViemChain(chainId: number): Chain {
+  const known = KNOWN_VIEM_CHAINS[chainId];
+  if (known) return known;
+  const cfg = getChain(chainId);
+  return defineChain({
+    id: chainId,
+    name: cfg.name,
+    nativeCurrency: {
+      name: cfg.nativeSymbol ?? "ETH",
+      symbol: cfg.nativeSymbol ?? "ETH",
+      decimals: 18,
+    },
+    rpcUrls: { default: { http: cfg.rpcs } },
+  });
+}
 
-// Cache account derivation (keyed by private key for uniqueness)
+// ---- Fallback transport ----
+
+function makeTransport(rpcs: string[]) {
+  if (rpcs.length === 1) return http(rpcs[0]);
+  return fallback(
+    rpcs.map((url) => http(url, { retryCount: 2, retryDelay: 1_000, timeout: 15_000 })),
+    { rank: true },
+  );
+}
+
+// ---- Versioned client cache ----
+
+let cacheVersion = 0;
+const publicClients = new Map<string, PublicClient>();
+const walletClients = new Map<string, WalletClient>();
 const accountCache = new Map<string, Account>();
 
+function cacheKey(chainId: number): string {
+  return `${chainId}:${cacheVersion}`;
+}
+
+/** Invalidate cached clients for a chain (or all chains). Triggers re-creation on next access. */
+export function invalidateClients(chainId?: number): void {
+  cacheVersion++;
+  if (chainId !== undefined) {
+    // Selective clear: remove stale entries for this chain
+    for (const [k] of publicClients) {
+      if (k.startsWith(`${chainId}:`)) publicClients.delete(k);
+    }
+    for (const [k] of walletClients) {
+      if (k.startsWith(`${chainId}:`)) walletClients.delete(k);
+    }
+  } else {
+    publicClients.clear();
+    walletClients.clear();
+  }
+}
+
 export function getPublicClient(chainId: ChainId): PublicClient {
-  if (!publicClients.has(chainId)) {
+  const key = cacheKey(chainId);
+  if (!publicClients.has(key)) {
     const chain = getChain(chainId);
-    const viemChain = VIEM_CHAINS[chainId];
     publicClients.set(
-      chainId,
+      key,
       createPublicClient({
-        chain: viemChain,
-        transport: http(chain.rpc),
+        chain: getViemChain(chainId),
+        transport: makeTransport(chain.rpcs),
       }) as PublicClient,
     );
   }
-  return publicClients.get(chainId)!;
+  return publicClients.get(key)!;
 }
 
 export function getWalletClient(chainId: ChainId, privateKey: `0x${string}`): WalletClient {
   const account = getAccount(privateKey);
-  const key = `${chainId}:${account.address}`;
+  const key = `${cacheKey(chainId)}:${account.address}`;
   if (!walletClients.has(key)) {
     const chain = getChain(chainId);
-    const viemChain = VIEM_CHAINS[chainId];
     walletClients.set(
       key,
       createWalletClient({
         account,
-        chain: viemChain,
-        transport: http(chain.rpc),
+        chain: getViemChain(chainId),
+        transport: makeTransport(chain.rpcs),
       }),
     );
   }
@@ -105,7 +186,7 @@ export interface TxResult {
  * Thrown when eth_call pre-flight simulation reverts.
  * Prevents spending gas on transactions that would fail.
  */
-export class SimulationError extends Error {
+class SimulationError extends Error {
   constructor(
     public readonly chainId: ChainId,
     public readonly to: `0x${string}`,

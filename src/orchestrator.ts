@@ -1,12 +1,22 @@
-import { log, isValidLogLevel, errMsg } from "./utils";
-import { loadPairConfigs, pairToConfigEntry, configEntryToPair } from "./config/pairs";
-import { startApi } from "./api";
+import { errMsg } from "../shared/format";
+import { log } from "./utils";
+import { initLogLevel } from "./infra/logger";
+import { loadPairConfigs, pairToConfigEntry } from "./config/pairs";
+import {
+  loadStrategyConfigs,
+  strategyToConfigEntry,
+  configEntryToStrategy,
+} from "./config/strategies";
+import type { WorkerType } from "./worker-base";
 import {
   ORCHESTRATOR_LOCK_TTL,
   HEALTH_CHECK_INTERVAL,
   HEARTBEAT_TIMEOUT,
-  DEFAULT_API_PORT,
   SHUTDOWN_GRACE_MS,
+  MAX_RESPAWN_BACKOFF_MS,
+  MAX_FAIL_COUNT,
+  COLLECTOR_STARTUP_DELAY_MS,
+  SUBSCRIBER_RECONNECT_MS,
 } from "./config/params";
 import {
   createRedis,
@@ -16,53 +26,205 @@ import {
   refreshLock,
   releaseLock,
   getWorkerState,
-  getConfigPairIds,
-  getAllConfigPairs,
-  setConfigPair,
+  getCollectorState,
+  publishControl,
+  pairCfg,
+  strategyCfg,
+  dexCfg,
+  getConfigCollectorPairIds,
+  addConfigCollectorPair,
+  getConfigPools,
+  setConfigPools,
+  getRpcConfig,
 } from "./infra/redis";
+import type { DexMetadata } from "../shared/types";
+import { DEX_DISPLAY_NAMES } from "./config/dexs";
+import { POOL_REGISTRY } from "./config/pools";
+import { loadRpcOverrides, setChainRpcs } from "./config/chains";
+import { invalidateClients } from "./execution/tx";
 import { DragonflyStore } from "./data/store-dragonfly";
+import {
+  createWorkerContainer,
+  startContainer,
+  stopContainer,
+  killContainer,
+  inspectContainer,
+  cleanupStaleContainers,
+  type DockerConfig,
+} from "./infra/docker";
+import { resolveOciRuntime, ensureRuntimeReady } from "./infra/oci";
 import type { Subprocess } from "bun";
 
-const level = process.env.LOG_LEVEL || "info";
-if (isValidLogLevel(level)) log.setLevel(level);
+initLogLevel();
 
 const startTs = Date.now();
 const lockValue = `orchestrator:${process.pid}:${startTs}`;
 
+// ---- Worker Backend Abstraction ----
+
+type WorkerRef = { kind: "process"; proc: Subprocess } | { kind: "docker"; containerId: string };
+
 interface WorkerHandle {
-  pairId: string;
-  proc: Subprocess;
+  id: string; // strategy name for strategies, pairId for collectors
+  workerType: WorkerType;
+  ref: WorkerRef;
   spawnedAt: number;
   failCount: number;
   nextRetryAt: number;
 }
 
-const workers = new Map<string, WorkerHandle>();
-
-const MAX_RESPAWN_BACKOFF_MS = 300_000; // 5 min cap
-const MAX_FAIL_COUNT = 20;
-
-function spawnWorker(pairId: string): WorkerHandle {
-  const existing = workers.get(pairId);
-  const failCount = existing?.failCount ?? 0;
-
-  const workerPath = new URL("worker.ts", import.meta.url).pathname;
-  const proc = Bun.spawn(["bun", workerPath, pairId], {
-    env: { ...process.env, WORKER_PAIR_ID: pairId },
-    stdout: "inherit",
-    stderr: "inherit",
-  });
-  const handle: WorkerHandle = { pairId, proc, spawnedAt: Date.now(), failCount, nextRetryAt: 0 };
-  workers.set(pairId, handle);
-  log.info(`Spawned worker ${pairId} (pid=${proc.pid})`, { pairId });
-  return handle;
+interface WorkerBackend {
+  mode: "process" | "docker";
+  spawn(id: string, workerType: WorkerType): Promise<WorkerHandle>;
+  isExited(handle: WorkerHandle): Promise<boolean>;
+  exitCode(handle: WorkerHandle): Promise<number | null>;
+  kill(handle: WorkerHandle): Promise<void>;
+  forceKill(handle: WorkerHandle): Promise<void>;
+  waitExited(handles: WorkerHandle[], timeoutMs: number): Promise<void>;
+  cleanup?(): Promise<void>;
 }
 
+function processBackend(): WorkerBackend {
+  const collectorPath = new URL("collector.ts", import.meta.url).pathname;
+  const workerPath = new URL("worker.ts", import.meta.url).pathname;
+  return {
+    mode: "process",
+    async spawn(id, workerType) {
+      const entryPath = workerType === "collector" ? collectorPath : workerPath;
+      const envKey = workerType === "collector" ? "COLLECTOR_PAIR_ID" : "WORKER_STRATEGY_NAME";
+      const proc = Bun.spawn(["bun", entryPath, id], {
+        env: { ...process.env, [envKey]: id },
+        stdout: "inherit",
+        stderr: "inherit",
+      });
+      log.info(`Spawned ${workerType} ${id} (pid=${proc.pid})`, { id, workerType });
+      return {
+        id,
+        workerType,
+        ref: { kind: "process", proc },
+        spawnedAt: Date.now(),
+        failCount: 0,
+        nextRetryAt: 0,
+      };
+    },
+    async isExited(h) {
+      return h.ref.kind === "process" && h.ref.proc.exitCode !== null;
+    },
+    async exitCode(h) {
+      return h.ref.kind === "process" ? h.ref.proc.exitCode : null;
+    },
+    async kill(h) {
+      if (h.ref.kind === "process") h.ref.proc.kill();
+    },
+    async forceKill(h) {
+      if (h.ref.kind === "process") h.ref.proc.kill(9);
+    },
+    async waitExited(handles, timeoutMs) {
+      const living = handles.filter(
+        (h) => h.ref.kind === "process" && h.ref.proc.exitCode === null,
+      );
+      await Promise.race([
+        Promise.allSettled(
+          living.map((h) => (h.ref as { kind: "process"; proc: Subprocess }).proc.exited),
+        ),
+        new Promise((r) => setTimeout(r, timeoutMs)),
+      ]);
+    },
+  };
+}
+
+function dockerBackend(cfg: DockerConfig): WorkerBackend {
+  return {
+    mode: "docker",
+    async spawn(id, workerType) {
+      const containerId = await createWorkerContainer(cfg, id, workerType);
+      await startContainer(cfg, containerId);
+      log.info(`Spawned ${workerType} container ${id} (${containerId.slice(0, 12)})`, {
+        id,
+        workerType,
+      });
+      return {
+        id,
+        workerType,
+        ref: { kind: "docker", containerId },
+        spawnedAt: Date.now(),
+        failCount: 0,
+        nextRetryAt: 0,
+      };
+    },
+    async isExited(h) {
+      if (h.ref.kind !== "docker") return false;
+      const state = await inspectContainer(cfg, h.ref.containerId);
+      return !state.running;
+    },
+    async exitCode(h) {
+      if (h.ref.kind !== "docker") return null;
+      const state = await inspectContainer(cfg, h.ref.containerId);
+      return state.exitCode;
+    },
+    async kill(h) {
+      if (h.ref.kind === "docker") {
+        await stopContainer(cfg, h.ref.containerId, 30).catch(() => {});
+      }
+    },
+    async forceKill(h) {
+      if (h.ref.kind === "docker") {
+        await killContainer(cfg, h.ref.containerId).catch(() => {});
+      }
+    },
+    async waitExited(handles, timeoutMs) {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const allDone = await Promise.all(
+          handles.map(async (h) =>
+            h.ref.kind === "docker"
+              ? !(await inspectContainer(cfg, h.ref.containerId).catch(() => ({ running: false })))
+                  .running
+              : true,
+          ),
+        );
+        if (allDone.every(Boolean)) return;
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    },
+    async cleanup() {
+      const count = await cleanupStaleContainers(cfg);
+      if (count) log.info(`Cleaned up ${count} stale container(s)`);
+    },
+  };
+}
+
+// ---- Orchestrator State ----
+
+const collectors = new Map<string, WorkerHandle>();
+const strategies = new Map<string, WorkerHandle>();
+
 async function main() {
+  const useDocker = process.argv.includes("--docker") || process.env.ORCHESTRATOR_MODE === "docker";
+
+  let backend: WorkerBackend;
+  if (useDocker) {
+    const rt = resolveOciRuntime();
+    await ensureRuntimeReady(rt);
+    const dockerHost = process.env.DOCKER_HOST || rt.socket;
+    const dockerNetwork = process.env.DOCKER_NETWORK || "btr-net";
+    const dockerImage = process.env.DOCKER_IMAGE || "btr-alm";
+    backend = dockerBackend({ host: dockerHost, network: dockerNetwork, image: dockerImage });
+    log.info(`Using ${rt.name} runtime (socket=${dockerHost}, network=${dockerNetwork})`);
+  } else {
+    backend = processBackend();
+    log.info("Orchestrator using process backend (Bun.spawn)");
+  }
+
+  if (backend.cleanup) await backend.cleanup();
+
   const redis = createRedis();
 
-  // Acquire orchestrator singleton lock (TTL = 60s, refreshed every 10s)
-  const lockTtl = ORCHESTRATOR_LOCK_TTL * 2; // 60s for safety margin
+  const rpcCount = await loadRpcOverrides(redis);
+  if (rpcCount) log.info(`Loaded ${rpcCount} RPC override(s) from DragonflyDB`);
+
+  // Acquire orchestrator singleton lock
+  const lockTtl = ORCHESTRATOR_LOCK_TTL * 2;
   const acquired = await acquireLock(redis, KEYS.orchestratorLock, lockValue, lockTtl);
   if (!acquired) {
     log.error("Orchestrator already running (lock held). Exiting.");
@@ -71,50 +233,190 @@ async function main() {
   }
   log.info(`Orchestrator acquired lock (pid=${process.pid})`);
 
-  // Load pair configs: DragonflyDB first, seed from env if empty
-  const existingConfigIds = await getConfigPairIds(redis);
+  // ---- Seeding: pair configs ----
+  const existingConfigIds = await pairCfg.ids(redis);
   if (!existingConfigIds.length) {
     const envPairs = loadPairConfigs();
-    if (!envPairs.length) {
-      log.error("No pairs configured. Set PAIRS and POOLS_* env vars.");
+    if (envPairs.length) {
+      await Promise.all(envPairs.map((pair) => pairCfg.set(redis, pairToConfigEntry(pair))));
+      log.info(`Seeded ${envPairs.length} pair config(s) from env into DragonflyDB`);
+    }
+  }
+
+  // ---- Seeding: strategy configs ----
+  const existingStrategyNames = await strategyCfg.ids(redis);
+  if (!existingStrategyNames.length) {
+    const envStrategies = loadStrategyConfigs();
+    if (!envStrategies.length) {
+      log.error("No strategies configured. Set STRATEGIES or PAIRS env vars.");
       await releaseLock(redis, KEYS.orchestratorLock, lockValue);
       redis.close();
       process.exit(1);
     }
-    for (const pair of envPairs) {
-      await setConfigPair(redis, pairToConfigEntry(pair));
-    }
-    log.info(`Seeded ${envPairs.length} pair config(s) from env into DragonflyDB`);
+    await Promise.all(envStrategies.map((s) => strategyCfg.set(redis, strategyToConfigEntry(s))));
+    log.info(`Seeded ${envStrategies.length} strategy config(s) from env into DragonflyDB`);
   }
 
-  const configEntries = await getAllConfigPairs(redis);
-  const pairs = configEntries
-    .map(configEntryToPair)
-    .filter((p): p is NonNullable<typeof p> => p !== null);
-  if (!pairs.length) {
-    log.error("No valid pair configs in DragonflyDB.");
+  // ---- Seeding: DEX metadata (upsert missing) ----
+  const existingDexs = await dexCfg.getAll(redis);
+  const existingDexIds = new Set(existingDexs.map((d) => d.id));
+  const newDexEntries: DexMetadata[] = Object.entries(DEX_DISPLAY_NAMES)
+    .filter(([id]) => !existingDexIds.has(id))
+    .map(([id, meta]) => ({ id, ...meta }));
+  if (newDexEntries.length) {
+    await Promise.all(newDexEntries.map((d) => dexCfg.set(redis, d)));
+    log.info(`Seeded ${newDexEntries.length} new DEX metadata entries into DragonflyDB`);
+  }
+
+  // ---- Seeding: pool registry ----
+  for (const [pairId, pools] of Object.entries(POOL_REGISTRY)) {
+    const existing = await getConfigPools(redis, pairId);
+    if (!existing) {
+      await setConfigPools(
+        redis,
+        pairId,
+        pools.map((p) => ({ chain: p.chain, address: p.id, dex: p.dex })),
+      );
+    }
+  }
+
+  // Load strategy configs
+  const strategyEntries = await strategyCfg.getAll(redis);
+  const strategyConfigs = strategyEntries
+    .map((entry) => {
+      const s = configEntryToStrategy(entry);
+      if (!s)
+        log.warn(`Strategy ${entry.name}: unknown token(s) for pair ${entry.pairId}, skipping`);
+      return s;
+    })
+    .filter((s): s is NonNullable<typeof s> => s !== null);
+
+  if (!strategyConfigs.length) {
+    log.error("No valid strategy configs in DragonflyDB.");
     await releaseLock(redis, KEYS.orchestratorLock, lockValue);
     redis.close();
     process.exit(1);
   }
 
-  log.info(`Orchestrator starting — ${pairs.length} pair(s)`);
+  log.info(`Orchestrator starting — ${strategyConfigs.length} strategy(ies)`);
 
-  // Register pair IDs in Redis SET
-  let pairIds = pairs.map((p) => p.id);
-  await redis.sadd(KEYS.workers, ...pairIds);
+  let strategyNames = strategyConfigs.map((s) => s.name);
+  await redis.sadd(KEYS.workers, ...strategyNames);
 
-  // Subscriber for config changes — set up BEFORE spawning workers to avoid race condition
+  // Dedupe pair IDs from strategies for collectors
+  const collectorPairIds = new Set<string>();
+  for (const s of strategyConfigs) collectorPairIds.add(s.pairId);
+
+  // Seed collector config
+  const existingCollectorIds = await getConfigCollectorPairIds(redis);
+  const existingCollectorSet = new Set(existingCollectorIds);
+  const newCollectorIds = [...collectorPairIds].filter((id) => !existingCollectorSet.has(id));
+  if (newCollectorIds.length) {
+    await Promise.all(newCollectorIds.map((id) => addConfigCollectorPair(redis, id)));
+  }
+
   let sub: typeof redis | null = null;
 
-  // Start API server (passes redis for state reads)
-  const apiPort = parseInt(process.env.API_PORT || String(DEFAULT_API_PORT));
-  startApi(apiPort, redis);
+  async function spawnWorker(map: Map<string, WorkerHandle>, id: string, workerType: WorkerType) {
+    const existing = map.get(id);
+    const handle = await backend.spawn(id, workerType);
+    handle.failCount = existing?.failCount ?? 0;
+    map.set(id, handle);
+  }
+
+  const spawnCollector = (pairId: string) => spawnWorker(collectors, pairId, "collector");
+  const spawnStrategy = (name: string) => spawnWorker(strategies, name, "strategy");
+
+  /** Ensure a collector is running for a pair. Returns true if already running. */
+  async function ensureCollector(pairId: string): Promise<boolean> {
+    const handle = collectors.get(pairId);
+    if (handle && !(await backend.isExited(handle))) return true;
+    await spawnCollector(pairId);
+    return false;
+  }
+
+  /** Monitor a set of workers (collectors or strategies). */
+  async function healthCheckWorkers(
+    workerMap: Map<string, WorkerHandle>,
+    ids: string[],
+    heartbeatKey: (id: string) => string,
+    restartingKey: (id: string) => string,
+    spawnFn: (id: string) => Promise<void>,
+    getStateFn: (id: string) => Promise<{ status?: string; errorMsg?: string } | null>,
+  ) {
+    const now = Date.now();
+    for (const id of ids) {
+      const hb = await redis.get(heartbeatKey(id));
+      const handle = workerMap.get(id);
+      if (!handle) {
+        log.warn(`Worker ${id} not tracked — respawning`, { id });
+        await spawnFn(id);
+        continue;
+      }
+
+      const exited = await backend.isExited(handle);
+      if (exited) {
+        if (handle.failCount >= MAX_FAIL_COUNT) continue;
+
+        const restarting = await redis.get(restartingKey(id));
+        if (restarting) {
+          await redis.del(restartingKey(id));
+          handle.failCount = 0;
+          log.info(`${handle.workerType} ${id} restart requested — respawning immediately`, {
+            id,
+          });
+          await spawnFn(id);
+          continue;
+        }
+
+        if (handle.nextRetryAt > now) continue;
+
+        if (handle.nextRetryAt === 0) {
+          handle.failCount++;
+          const backoff = Math.min(
+            HEALTH_CHECK_INTERVAL * 2 ** handle.failCount,
+            MAX_RESPAWN_BACKOFF_MS,
+          );
+          handle.nextRetryAt = now + backoff;
+          const code = await backend.exitCode(handle);
+          log.warn(
+            `${handle.workerType} ${id} exited (code=${code}) — respawn in ${Math.round(backoff / 1000)}s (attempt ${handle.failCount})`,
+            { id },
+          );
+          continue;
+        }
+
+        await spawnFn(id);
+        continue;
+      }
+
+      if (hb) {
+        handle.failCount = 0;
+        handle.nextRetryAt = 0;
+      }
+
+      try {
+        const ws = await getStateFn(id);
+        if (ws?.status === "error") {
+          log.warn(`${handle.workerType} ${id} reporting error: ${ws.errorMsg ?? "unknown"}`, {
+            id,
+          });
+        }
+      } catch {}
+
+      if (!hb && now - handle.spawnedAt > HEARTBEAT_TIMEOUT * 2) {
+        log.warn(`${handle.workerType} ${id} heartbeat missing — killing`, { id });
+        await backend.kill(handle);
+      }
+    }
+  }
 
   // Health-check + lock refresh loop
+  let healthCheckRunning = false;
   const healthInterval = setInterval(async () => {
+    if (healthCheckRunning) return;
+    healthCheckRunning = true;
     try {
-      // Refresh orchestrator lock first (before any slow worker checks)
       const refreshed = await refreshLock(redis, KEYS.orchestratorLock, lockValue, lockTtl);
       if (!refreshed) {
         log.error("Orchestrator lost lock — shutting down");
@@ -122,83 +424,29 @@ async function main() {
         return;
       }
 
-      const now = Date.now();
+      // Health-check collectors
+      await healthCheckWorkers(
+        collectors,
+        [...collectorPairIds],
+        KEYS.collectorHeartbeat,
+        KEYS.collectorRestarting,
+        spawnCollector,
+        (id) => getCollectorState(redis, id),
+      );
 
-      // Check worker heartbeats
-      for (const pairId of pairIds) {
-        const hb = await redis.get(KEYS.workerHeartbeat(pairId));
-        const handle = workers.get(pairId);
-        if (!handle) {
-          log.warn(`Worker ${pairId} not tracked — respawning`, { pairId });
-          spawnWorker(pairId);
-          continue;
-        }
-
-        // Check if process exited
-        if (handle.proc.exitCode !== null) {
-          if (handle.failCount >= MAX_FAIL_COUNT) {
-            continue; // Gave up
-          }
-          // Intentional restart via API — skip backoff
-          const restarting = await redis.get(KEYS.workerRestarting(pairId));
-          if (restarting) {
-            await redis.del(KEYS.workerRestarting(pairId));
-            handle.failCount = 0;
-            log.info(`Worker ${pairId} restart requested — respawning immediately`, { pairId });
-            spawnWorker(pairId);
-            continue;
-          }
-          // Still in backoff window — wait
-          if (handle.nextRetryAt > now) continue;
-          // First detection or backoff elapsed — schedule or respawn
-          if (handle.nextRetryAt === 0) {
-            // First detection: set backoff and wait
-            handle.failCount++;
-            const backoff = Math.min(
-              HEALTH_CHECK_INTERVAL * 2 ** handle.failCount,
-              MAX_RESPAWN_BACKOFF_MS,
-            );
-            handle.nextRetryAt = now + backoff;
-            log.warn(
-              `Worker ${pairId} exited (code=${handle.proc.exitCode}) — respawn in ${Math.round(backoff / 1000)}s (attempt ${handle.failCount})`,
-              { pairId },
-            );
-            continue;
-          }
-          // Backoff elapsed — respawn
-          spawnWorker(pairId);
-          continue;
-        }
-
-        // Reset fail count on healthy heartbeat
-        if (hb) {
-          handle.failCount = 0;
-          handle.nextRetryAt = 0;
-        }
-
-        // Detect error-looping workers via WorkerState
-        try {
-          const ws = await getWorkerState(redis, pairId);
-          if (ws?.status === "error") {
-            log.warn(`Worker ${pairId} reporting error state: ${ws.errorMsg ?? "unknown"}`, {
-              pairId,
-            });
-          }
-        } catch {
-          // Corrupted state JSON — non-fatal, continue checking other workers
-        }
-
-        // Check heartbeat expiry (only after initial grace period)
-        if (!hb && now - handle.spawnedAt > HEARTBEAT_TIMEOUT * 2) {
-          log.warn(`Worker ${pairId} heartbeat missing — killing (respawn on next health check)`, {
-            pairId,
-          });
-          handle.proc.kill();
-          // Don't respawn immediately — wait for exitCode to be set, handled above
-        }
-      }
+      // Health-check strategy runners
+      await healthCheckWorkers(
+        strategies,
+        strategyNames,
+        KEYS.workerHeartbeat,
+        KEYS.workerRestarting,
+        spawnStrategy,
+        (id) => getWorkerState(redis, id),
+      );
     } catch (e) {
       log.error(`Health check error: ${errMsg(e)}`);
+    } finally {
+      healthCheckRunning = false;
     }
   }, HEALTH_CHECK_INTERVAL);
 
@@ -210,34 +458,28 @@ async function main() {
     log.info("Orchestrator shutting down...");
     clearInterval(healthInterval);
 
-    // Signal all workers to stop
     try {
-      await redis.publish(CHANNELS.control, JSON.stringify({ type: "SHUTDOWN" }));
+      await publishControl(redis, { type: "SHUTDOWN" });
     } catch {
-      // Best-effort
+      /* best-effort */
     }
 
-    // Wait for all workers in parallel with shared deadline
-    const timeout = new Promise((r) => setTimeout(r, SHUTDOWN_GRACE_MS));
-    await Promise.race([
-      Promise.allSettled(
-        [...workers.values()].filter((h) => h.proc.exitCode === null).map((h) => h.proc.exited),
-      ),
-      timeout,
-    ]);
-    // SIGKILL any survivors
-    for (const [, handle] of workers) {
-      if (handle.proc.exitCode === null) {
-        log.warn(`Force-killing worker ${handle.pairId} (SIGKILL)`);
-        handle.proc.kill(9);
+    const allHandles = [...collectors.values(), ...strategies.values()];
+    await backend.waitExited(allHandles, SHUTDOWN_GRACE_MS);
+
+    for (const handle of allHandles) {
+      if (!(await backend.isExited(handle))) {
+        log.warn(`Force-killing ${handle.workerType} ${handle.id}`);
+        await backend.forceKill(handle);
       }
     }
 
-    // Only release orchestrator lock — workers clean up their own keys via TTL
+    if (backend.cleanup) await backend.cleanup();
+
     try {
       await releaseLock(redis, KEYS.orchestratorLock, lockValue);
     } catch {
-      // Best-effort cleanup
+      /* best-effort */
     }
 
     await log.shutdown();
@@ -246,57 +488,70 @@ async function main() {
       if (sub) sub.close();
       redis.close();
     } catch {
-      // Already disconnected
+      /* best-effort */
     }
     process.exit(0);
   }
 
-  // Reconcile workers with DragonflyDB config (mutex prevents concurrent runs)
+  // Config reconciliation
   let reconciling = false;
   let reconcilePending = false;
   async function reconcileFromConfig() {
-    if (reconciling) { reconcilePending = true; return; }
+    if (reconciling) {
+      reconcilePending = true;
+      return;
+    }
     reconciling = true;
     try {
-      const entries = await getAllConfigPairs(redis);
-      const newIds = new Set(entries.map((e) => e.id));
-      const oldIds = new Set(pairIds);
+      const entries = await strategyCfg.getAll(redis);
+      const newNames = new Set(entries.map((e) => e.name));
+      const oldNames = new Set(strategyNames);
 
-      // Stop removed workers + clean up store keys
-      for (const id of oldIds) {
-        if (!newIds.has(id)) {
-          log.info(`Config reconcile: stopping removed pair ${id}`);
-          const handle = workers.get(id);
-          if (handle && handle.proc.exitCode === null) handle.proc.kill();
-          workers.delete(id);
-          const store = new DragonflyStore(redis, id);
+      // Derive new collector pairs from strategies
+      const newPairIds = new Set(entries.map((e) => e.pairId));
+
+      // Remove strategies for deleted entries
+      for (const name of oldNames) {
+        if (!newNames.has(name)) {
+          log.info(`Config reconcile: stopping removed strategy ${name}`);
+          const handle = strategies.get(name);
+          if (handle) await backend.kill(handle);
+          strategies.delete(name);
+          const store = new DragonflyStore(redis, name, "btr:strategy");
           await store.deleteAll();
         }
       }
 
-      // Restart modified workers (same ID, config may have changed)
-      for (const id of newIds) {
-        if (oldIds.has(id)) {
-          const handle = workers.get(id);
-          if (handle && handle.proc.exitCode === null) {
-            log.info(`Config reconcile: restarting modified pair ${id}`);
-            handle.proc.kill();
+      // Add/restart strategies for new/modified entries
+      for (const entry of entries) {
+        // Ensure collector exists for this pair
+        if (!collectorPairIds.has(entry.pairId)) {
+          await addConfigCollectorPair(redis, entry.pairId);
+          collectorPairIds.add(entry.pairId);
+          await spawnCollector(entry.pairId);
+        } else {
+          await ensureCollector(entry.pairId);
+        }
+
+        if (oldNames.has(entry.name)) {
+          const handle = strategies.get(entry.name);
+          if (handle) {
+            log.info(`Config reconcile: restarting modified strategy ${entry.name}`);
+            await backend.kill(handle);
+            await spawnStrategy(entry.name);
           }
+        } else {
+          log.info(`Config reconcile: starting new strategy ${entry.name}`);
+          await spawnStrategy(entry.name);
         }
       }
 
-      // Spawn new workers
-      for (const id of newIds) {
-        if (!oldIds.has(id)) {
-          log.info(`Config reconcile: starting new pair ${id}`);
-          spawnWorker(id);
-        }
-      }
-
-      pairIds = [...newIds];
+      strategyNames = [...newNames];
       await redis.del(KEYS.workers);
-      if (pairIds.length) await redis.sadd(KEYS.workers, ...pairIds);
-      log.info(`Config reconciled — ${pairIds.length} pair(s)`);
+      if (strategyNames.length) await redis.sadd(KEYS.workers, ...strategyNames);
+      log.info(
+        `Config reconciled — ${strategyNames.length} strategy(ies), ${collectorPairIds.size} collector(s)`,
+      );
     } finally {
       reconciling = false;
       if (reconcilePending) {
@@ -306,36 +561,54 @@ async function main() {
     }
   }
 
-  // Subscribe to config changes BEFORE spawning workers (prevents race condition)
+  // Subscribe to config changes BEFORE spawning workers
   async function connectSubscriber() {
     try {
-      if (sub) { try { sub.close(); } catch {} }
+      if (sub) {
+        try {
+          sub.close();
+        } catch {}
+      }
       sub = await redis.duplicate();
       await sub.subscribe(CHANNELS.control, (message: string) => {
         try {
           const cmd = JSON.parse(message);
           if (cmd.type === "CONFIG_CHANGED") {
-            reconcileFromConfig().catch((e) =>
-              log.error(`Config reconcile failed: ${errMsg(e)}`),
-            );
+            reconcileFromConfig().catch((e) => log.error(`Config reconcile failed: ${errMsg(e)}`));
+          } else if (cmd.type === "RPC_CHANGED") {
+            const cid = cmd.chainId as number | undefined;
+            if (cid) {
+              getRpcConfig(redis, cid)
+                .then((rpcs) => {
+                  setChainRpcs(cid, rpcs ?? []);
+                  invalidateClients(cid);
+                  log.info(`RPC config updated for chain ${cid}`);
+                })
+                .catch((e) => log.warn(`RPC reload failed: ${errMsg(e)}`));
+            }
           }
-        } catch {
-          // Ignore malformed messages
+        } catch (e) {
+          log.warn(`Orchestrator control message parse error: ${errMsg(e)}`);
         }
       });
     } catch (e) {
-      log.warn(`Orchestrator subscriber setup failed: ${errMsg(e)}, retrying in 15s`);
-      setTimeout(connectSubscriber, 15_000);
+      log.warn(`Orchestrator subscriber setup failed: ${errMsg(e)}, retrying...`);
+      setTimeout(connectSubscriber, SUBSCRIBER_RECONNECT_MS);
     }
   }
   await connectSubscriber();
 
-  // Now spawn workers — subscriber is ready, no config change messages will be lost
-  for (const pair of pairs) {
-    spawnWorker(pair.id);
+  // Spawn collectors first, then strategy runners
+  await Promise.all([...collectorPairIds].map(spawnCollector));
+  // Brief delay to let collectors start before strategies read their data
+  await new Promise((r) => setTimeout(r, COLLECTOR_STARTUP_DELAY_MS));
+  await Promise.all(strategyNames.map(spawnStrategy));
+
+  // Register collectors in DragonflyDB
+  if (collectorPairIds.size) {
+    await redis.sadd(KEYS.collectors, ...collectorPairIds);
   }
 
-  // SIGHUP also triggers reconciliation
   process.on("SIGHUP", () => {
     reconcileFromConfig().catch((e) => log.error(`Config reload failed: ${errMsg(e)}`));
   });

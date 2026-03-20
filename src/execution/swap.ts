@@ -1,5 +1,6 @@
 import type { ChainId, LifiQuote, LifiQuoteParams, SwapResult } from "../types";
-import { log, errMsg, RateLimiter } from "../utils";
+import { errMsg } from "../../shared/format";
+import { log, RateLimiter } from "../utils";
 import { getChain } from "../config/chains";
 import { ABIS } from "../config/dexs";
 import {
@@ -273,7 +274,7 @@ export async function waitForArrival(
   pollMs?: number,
   getBalanceFn: typeof getBalance = getBalance,
 ): Promise<bigint> {
-  const interval = pollMs ?? getChain(chainId).blockTimeMs * 4;
+  const interval = pollMs ?? (getChain(chainId).blockTimeMs ?? 2_000) * 4;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, interval));

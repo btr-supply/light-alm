@@ -8,7 +8,8 @@ import type {
   MintResult,
   BurnResult,
 } from "../types";
-import { DexFamily, findPool } from "../types";
+import { DexFamily } from "../types";
+import { findPool } from "../config/pools";
 import {
   getDexFamily,
   V4_STATE_VIEW,
@@ -360,8 +361,20 @@ export async function mintV4Position(
 
   const tokenId = extractTokenIdFromLogs(result.logs ?? []);
 
-  return buildAndSaveMintResult(store, pool, pair, allocation, range,
-    { positionId: tokenId || `pending:${result.hash}`, tickLower, tickUpper, liquidity, amount0, amount1 },
+  return buildAndSaveMintResult(
+    store,
+    pool,
+    pair,
+    allocation,
+    range,
+    {
+      positionId: tokenId || `pending:${result.hash}`,
+      tickLower,
+      tickUpper,
+      liquidity,
+      amount0,
+      amount1,
+    },
     result,
   );
 }

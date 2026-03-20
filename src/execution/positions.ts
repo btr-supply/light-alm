@@ -9,8 +9,9 @@ import type {
   DexId,
 } from "../types";
 import type { DragonflyStore } from "../data/store-dragonfly";
-import { DexFamily, findPool } from "../types";
+import { DexFamily } from "../types";
 import { getDex, getDexFamily, ABIS } from "../config/dexs";
+import { findPool } from "../config/pools";
 import { rangeToTicks } from "../strategy/range";
 import { getPublicClient, getAccount, sendAndWait, approveTokenPair, requireAddress } from "./tx";
 import { sortTokensWithAmounts, withFallback } from "../utils";
@@ -58,18 +59,31 @@ export function successBurnResult(
   amount1: bigint,
   tx: { hash: string; gasUsed: bigint; gasPrice: bigint },
 ): BurnResult {
-  return { success: true, amount0, amount1, hash: tx.hash as `0x${string}`, gasUsed: tx.gasUsed, gasPrice: tx.gasPrice };
+  return {
+    success: true,
+    amount0,
+    amount1,
+    hash: tx.hash as `0x${string}`,
+    gasUsed: tx.gasUsed,
+    gasPrice: tx.gasPrice,
+  };
 }
 
 /** Check for mint tx revert — returns failed result if reverted, null otherwise. */
-export function checkMintRevert(label: string, r: { hash: string; status: string; gasUsed: bigint; gasPrice: bigint }): MintResult | null {
+export function checkMintRevert(
+  label: string,
+  r: { hash: string; status: string; gasUsed: bigint; gasPrice: bigint },
+): MintResult | null {
   if (r.status !== "reverted") return null;
   log.error(`${label} reverted: ${r.hash}`);
   return failedMintResult(r);
 }
 
 /** Check for burn tx revert — returns failed result if reverted, null otherwise. */
-export function checkBurnRevert(label: string, r: { hash: string; status: string; gasUsed: bigint; gasPrice: bigint }): BurnResult | null {
+export function checkBurnRevert(
+  label: string,
+  r: { hash: string; status: string; gasUsed: bigint; gasPrice: bigint },
+): BurnResult | null {
   if (r.status !== "reverted") return null;
   log.error(`${label} reverted: ${r.hash}`);
   return failedBurnResult(r);
@@ -299,8 +313,20 @@ export async function mintPosition(
     ? await readPositionLiquidity(pool.chain, pm, BigInt(tokenId), isAlgebra)
     : 0n;
 
-  return buildAndSaveMintResult(store, pool, pair, allocation, range,
-    { positionId: tokenId || `pending:${result.hash}`, tickLower, tickUpper, liquidity, amount0, amount1 },
+  return buildAndSaveMintResult(
+    store,
+    pool,
+    pair,
+    allocation,
+    range,
+    {
+      positionId: tokenId || `pending:${result.hash}`,
+      tickLower,
+      tickUpper,
+      liquidity,
+      amount0,
+      amount1,
+    },
     result,
   );
 }
@@ -385,7 +411,11 @@ export async function burnPosition(
   const collectRes = await sendAndWait(position.chain, privateKey, { to: pm, data: collectData });
   if (collectRes.status === "reverted") {
     log.error(`Collect reverted: ${collectRes.hash}`);
-    return failedBurnResult({ hash: collectRes.hash, gasUsed: totalGasUsed + collectRes.gasUsed, gasPrice: collectRes.gasPrice });
+    return failedBurnResult({
+      hash: collectRes.hash,
+      gasUsed: totalGasUsed + collectRes.gasUsed,
+      gasPrice: collectRes.gasPrice,
+    });
   }
 
   totalGasUsed += collectRes.gasUsed;

@@ -8,7 +8,7 @@ import type {
   MintResult,
   BurnResult,
 } from "../types";
-import { findPool } from "../types";
+import { findPool } from "../config/pools";
 import { getDex, ABIS } from "../config/dexs";
 import { getPublicClient, getAccount, sendAndWait, approveTokenPair, requireAddress } from "./tx";
 import {
@@ -160,8 +160,20 @@ export async function mintLBPosition(
 
   const lowerBin = activeIdNum - halfRange;
   const upperBin = activeIdNum + halfRange;
-  return buildAndSaveMintResult(store, pool, pair, allocation, range,
-    { positionId: `lb:${lowerBin}:${upperBin}`, tickLower: lowerBin, tickUpper: upperBin, liquidity: 0n, amount0, amount1 },
+  return buildAndSaveMintResult(
+    store,
+    pool,
+    pair,
+    allocation,
+    range,
+    {
+      positionId: `lb:${lowerBin}:${upperBin}`,
+      tickLower: lowerBin,
+      tickUpper: upperBin,
+      liquidity: 0n,
+      amount0,
+      amount1,
+    },
     result,
   );
 }
@@ -290,9 +302,18 @@ export async function burnLBPosition(
   totalGasUsed += result.gasUsed;
   lastGasPrice = result.gasPrice;
 
-  const reverted = checkBurnRevert("LB burn", { hash: result.hash, status: result.status, gasUsed: totalGasUsed, gasPrice: lastGasPrice });
+  const reverted = checkBurnRevert("LB burn", {
+    hash: result.hash,
+    status: result.status,
+    gasUsed: totalGasUsed,
+    gasPrice: lastGasPrice,
+  });
   if (reverted) return reverted;
 
   log.info(`LB position burned: ${position.id}`);
-  return successBurnResult(position.amount0, position.amount1, { hash: result.hash, gasUsed: totalGasUsed, gasPrice: lastGasPrice });
+  return successBurnResult(position.amount0, position.amount1, {
+    hash: result.hash,
+    gasUsed: totalGasUsed,
+    gasPrice: lastGasPrice,
+  });
 }
