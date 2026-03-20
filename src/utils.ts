@@ -1,29 +1,16 @@
-// ---- Logger (delegates to structured logger for dual-sink: console + OpenObserve) ----
+import { RSI_PERIOD, RETRY } from "./config/params";
+import { structuredLog, LEVELS, type Level } from "./infra/logger";
+import { errMsg } from "../shared/format";
+import type { Candle } from "./types";
+import { chainGasCostUsd } from "../shared/chains";
 
-import { RSI_PERIOD, DEFAULT_RETRY_COUNT, DEFAULT_RETRY_BACKOFF_MS } from "./config/params";
-import { structuredLog, LEVELS, type Level, type LogFields } from "./infra/logger";
-export type { LogFields };
-
-export const log = {
-  setLevel: (l: Level) => {
-    structuredLog.setLevel(l);
-  },
-  debug: (msg: string, fields?: LogFields) => structuredLog.debug(msg, fields),
-  info: (msg: string, fields?: LogFields) => structuredLog.info(msg, fields),
-  warn: (msg: string, fields?: LogFields) => structuredLog.warn(msg, fields),
-  error: (msg: string, fields?: LogFields) => structuredLog.error(msg, fields),
-  flush: () => structuredLog.flush(),
-  shutdown: () => structuredLog.shutdown(),
-};
+export { errMsg };
+export const log = structuredLog;
 
 export function isValidLogLevel(l: string): l is Level {
   return l in LEVELS;
 }
 
-// ---- Re-exports from ../shared/format ----
-
-import { errMsg } from "../shared/format";
-export { cap, errMsg } from "../shared/format";
 export const mean = (a: number[]) => (a.length === 0 ? 0 : a.reduce((s, v) => s + v, 0) / a.length);
 export const std = (a: number[]) => {
   if (a.length === 0) return 0;
@@ -31,25 +18,11 @@ export const std = (a: number[]) => {
   return Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / a.length);
 };
 
-// Sliding window SMA — O(n) instead of O(n*k)
-export function sma(values: number[], period: number): number[] {
-  if (period > values.length) return [];
-  const r: number[] = [];
-  let sum = 0;
-  for (let i = 0; i < period; i++) sum += values[i];
-  r.push(sum / period);
-  for (let i = period; i < values.length; i++) {
-    sum += values[i] - values[i - period];
-    r.push(sum / period);
-  }
-  return r;
-}
+export { sma } from "../shared/format";
 
 export function rsi(values: number[], period = RSI_PERIOD): number {
   if (values.length < period + 1) return 50;
-  // Wilder's smoothing: seed with SMA, then EMA with alpha = 1/period
   const start = values.length - period;
-  // Wilder's EMA over all available prior deltas (walk forward from earliest)
   const earliest = Math.max(1, start - period * 4);
   let avgGain = 0,
     avgLoss = 0;
@@ -95,8 +68,8 @@ export class RateLimiter {
 
 export async function retry<T>(
   fn: () => Promise<T>,
-  maxRetries = DEFAULT_RETRY_COUNT,
-  backoffBase = DEFAULT_RETRY_BACKOFF_MS,
+  maxRetries: number = RETRY.default.count,
+  backoffBase: number = RETRY.default.backoffMs,
 ): Promise<T> {
   for (let i = 0; i <= maxRetries; i++) {
     try {
@@ -132,7 +105,6 @@ export function sortTokens(a: `0x${string}`, b: `0x${string}`): [`0x${string}`, 
   return a.toLowerCase() < b.toLowerCase() ? [a, b] : [b, a];
 }
 
-/** Sort token addresses and swap corresponding amounts to match. */
 export function sortTokensWithAmounts(
   t0: `0x${string}`,
   t1: `0x${string}`,
@@ -146,6 +118,54 @@ export function sortTokensWithAmounts(
   };
 }
 
-// ---- Formatting (re-exported from ../shared/format) ----
+// ---- BigInt-safe JSON replacer (shared across store-dragonfly + O2) ----
 
-export { fmtPct, fmtPct as pct, fmtUsd as usd } from "../shared/format";
+export const bigintReplacer = (_: string, v: unknown) => (typeof v === "bigint" ? v.toString() : v);
+
+// ---- Binary search ----
+
+/** Index of first candle with ts > target (upper bound). */
+export function upperBound(arr: Candle[], target: number): number {
+  let lo = 0, hi = arr.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (arr[mid].ts <= target) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+// ---- Impermanent loss ----
+
+/**
+ * Compute unrealized impermanent loss from position entry prices vs current price.
+ * Uses the standard IL formula: IL = 2*sqrt(r)/(1+r) - 1 where r = currentPrice/entryPrice
+ */
+export function computeIL(
+  positions: { entryPrice: number; entryValueUsd: number }[],
+  currentPrice: number,
+): number {
+  let total = 0;
+  for (const p of positions) {
+    if (p.entryPrice <= 0 || currentPrice <= 0) continue;
+    const r = currentPrice / p.entryPrice;
+    const ilFraction = (2 * Math.sqrt(r)) / (1 + r) - 1;
+    total += Math.abs(ilFraction) * p.entryValueUsd;
+  }
+  return total;
+}
+
+// ---- BigInt scaling ----
+
+const SCALE_PRECISION = 1_000_000_000n;
+export function scaleByPct(balance: bigint, pct: number): bigint {
+  return (balance * BigInt(Math.round(pct * Number(SCALE_PRECISION)))) / SCALE_PRECISION;
+}
+
+// ---- Per-pair gas cost ----
+
+/** Average gas cost across a pair's pool chains. */
+export function pairGasCost(pools: { chain: number }[]): number {
+  const chainSet = new Set(pools.map((p) => p.chain));
+  return [...chainSet].reduce((s, c) => s + chainGasCostUsd(c), 0) / Math.max(chainSet.size, 1);
+}

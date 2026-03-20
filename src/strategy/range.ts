@@ -1,6 +1,6 @@
 import type { Forces, ForceParams, Range } from "../types";
 import { DEFAULT_FORCE_PARAMS } from "../config/params";
-import { cap } from "../utils";
+import { cap } from "../../shared/format";
 
 /**
  * Convert volatility force to base range width (as fraction of price).
@@ -115,9 +115,7 @@ export function rangeDivergence(current: Range, target: Range): number {
   return rawDivergence(current.min, current.max, target.min, target.max);
 }
 
-// Import and re-export shared tick math — single source of truth for the 1.0001 tick base constant
 import { priceToTick } from "../../shared/format";
-export { priceToTick } from "../../shared/format";
 
 /**
  * Align tick to nearest valid tick spacing.

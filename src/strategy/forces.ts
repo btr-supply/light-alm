@@ -6,8 +6,12 @@ import {
   RSI_PERIOD,
   TREND_SCALE,
   VFORCE_SIGMOID_SCALE,
+  M15_MS,
+  H1_MS,
+  H4_MS,
 } from "../config/params";
-import { cap, mean, std, sma, rsi } from "../utils";
+import { cap } from "../../shared/format";
+import { mean, std, sma, rsi } from "../utils";
 
 // ---- Parkinson volatility (inlined from former indicators.ts) ----
 
@@ -116,25 +120,35 @@ export function computeForces(
   };
 }
 
+import { aggregateCandles } from "../../shared/format";
+
+/** Neutral forces returned when insufficient candle data is available. */
+export const NEUTRAL_FORCES: Forces = {
+  v: { force: 0, mean: 0, std: 0 },
+  m: { force: 50, up: 0, down: 0 },
+  t: { ma0: 0, ma1: 0, force: 50 },
+};
+
 /**
- * Aggregate candles into higher timeframes.
+ * Blend pre-computed per-timeframe forces with MTF_WEIGHTS.
+ * Use when timeframes are pre-aggregated (e.g. catch-up) to avoid re-aggregation.
  */
-export function aggregateCandles(source: Candle[], periodMinutes: number): Candle[] {
-  const periodMs = periodMinutes * 60_000;
-  const buckets = new Map<number, Candle>();
-  for (const c of source) {
-    const key = Math.floor(c.ts / periodMs) * periodMs;
-    const existing = buckets.get(key);
-    if (!existing) {
-      buckets.set(key, { ts: key, o: c.o, h: c.h, l: c.l, c: c.c, v: c.v });
-    } else {
-      existing.h = Math.max(existing.h, c.h);
-      existing.l = Math.min(existing.l, c.l);
-      existing.c = c.c;
-      existing.v += c.v;
-    }
+export function blendForces(frames: Forces[]): Forces {
+  const w = MTF_WEIGHTS;
+  let vForce = 0, vMean = 0, vStd = 0;
+  let mForce = 0, mUp = 0, mDown = 0;
+  let tForce = 0, tMa0 = 0, tMa1 = 0;
+  for (let i = 0; i < frames.length; i++) {
+    const f = frames[i], wi = w[i];
+    vForce += f.v.force * wi; vMean += f.v.mean * wi; vStd += f.v.std * wi;
+    mForce += f.m.force * wi; mUp += f.m.up * wi; mDown += f.m.down * wi;
+    tForce += f.t.force * wi; tMa0 += f.t.ma0 * wi; tMa1 += f.t.ma1 * wi;
   }
-  return [...buckets.values()].sort((a, b) => a.ts - b.ts);
+  return {
+    v: { force: vForce, mean: vMean, std: vStd },
+    m: { force: mForce, up: mUp, down: mDown },
+    t: { force: tForce, ma0: tMa0, ma1: tMa1 },
+  };
 }
 
 /**
@@ -147,44 +161,13 @@ export function compositeForces(
   params: ForceParams = DEFAULT_FORCE_PARAMS,
   precomputedM15?: Candle[],
 ): Forces {
-  // Aggregate from M1 with absolute periods to avoid compounding rounding errors
-  const m15 = precomputedM15 ?? aggregateCandles(m1Candles, 15);
-  const h1 = aggregateCandles(m1Candles, 60);
-  const h4 = aggregateCandles(m1Candles, 240);
+  const m15 = precomputedM15 ?? aggregateCandles(m1Candles, M15_MS);
+  const h1 = aggregateCandles(m1Candles, H1_MS);
+  const h4 = aggregateCandles(h1, H4_MS);
 
-  const frames = [
+  return blendForces([
     computeForces(m15.slice(-MTF_CANDLES.m15), params),
     computeForces(h1.slice(-MTF_CANDLES.h1), params),
     computeForces(h4.slice(-MTF_CANDLES.h4), params),
-  ];
-
-  const w = MTF_WEIGHTS;
-
-  let vForce = 0,
-    vMean = 0,
-    vStd = 0;
-  let mForce = 0,
-    mUp = 0,
-    mDown = 0;
-  let tForce = 0,
-    tMa0 = 0,
-    tMa1 = 0;
-  for (let i = 0; i < frames.length; i++) {
-    const f = frames[i],
-      wi = w[i];
-    vForce += f.v.force * wi;
-    vMean += f.v.mean * wi;
-    vStd += f.v.std * wi;
-    mForce += f.m.force * wi;
-    mUp += f.m.up * wi;
-    mDown += f.m.down * wi;
-    tForce += f.t.force * wi;
-    tMa0 += f.t.ma0 * wi;
-    tMa1 += f.t.ma1 * wi;
-  }
-  return {
-    v: { force: vForce, mean: vMean, std: vStd },
-    m: { force: mForce, up: mUp, down: mDown },
-    t: { force: tForce, ma0: tMa0, ma1: tMa1 },
-  };
+  ]);
 }

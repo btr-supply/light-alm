@@ -2,22 +2,18 @@ import type { Decision, PairAllocation, AllocationEntry, Position, Range, Forces
 import { weightedApr } from "./allocation";
 import { computeRange, rangeDivergence } from "./range";
 import { tickToPrice } from "../../shared/format";
-import { MIN_HOLD_MS } from "../config/params";
-import { log, pct } from "../utils";
+import {
+  MIN_HOLD_MS,
+  HOUR_MS,
+  MIN_ABSOLUTE_APR_GAIN,
+  PRA_GAS_MULT,
+  RS_GAS_MULT,
+  AMORTIZE_DAYS,
+} from "../config/params";
+import { fmtPct as pct } from "../../shared/format";
+import { log } from "../utils";
 
-/** Minimum absolute APR gain (bps) to justify PRA when currentApr is near zero. */
-const MIN_ABSOLUTE_APR_GAIN = 0.005; // 0.5% absolute floor
-
-/** Gas-cost safety multiplier for PRA (expected gain must exceed this × gas). */
-const PRA_GAS_MULT = 1.5;
-
-/** Gas-cost safety multiplier for RS (expected IL savings must exceed this × gas). */
-const RS_GAS_MULT = 2.0;
-
-/** Days to amortize gas cost over when evaluating rebalance profitability. */
-const AMORTIZE_DAYS = 7;
-
-export interface DecideOpts {
+interface DecideOpts {
   gasCostUsd: number;
   positionValueUsd: number;
 }
@@ -54,18 +50,14 @@ export function decide(
   // Improvement: relative gain with absolute floor to prevent noise triggers
   const aprGain = optimalApr - currentApr;
   const improvement =
-    currentApr > 0
-      ? aprGain / currentApr
-      : aprGain > MIN_ABSOLUTE_APR_GAIN
-        ? 1
-        : 0;
+    currentApr > 0 ? aprGain / currentApr : aprGain > MIN_ABSOLUTE_APR_GAIN ? 1 : 0;
 
   const base = { ts: now, currentApr, optimalApr, improvement, targetAllocations };
 
   // Minimum holding period: force HOLD if last rebalance was too recent
   if (lastRebalTs !== undefined && now - lastRebalTs < MIN_HOLD_MS) {
     log.debug(
-      `HOLD (min hold) — ${((now - lastRebalTs) / 3600_000).toFixed(1)}h since last rebal, need ${(MIN_HOLD_MS / 3600_000).toFixed(0)}h`,
+      `HOLD (min hold) — ${((now - lastRebalTs) / HOUR_MS).toFixed(1)}h since last rebal, need ${(MIN_HOLD_MS / HOUR_MS).toFixed(0)}h`,
     );
     return { type: "HOLD", ...base };
   }

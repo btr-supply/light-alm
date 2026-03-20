@@ -2,7 +2,8 @@ import type { PoolSnapshot, PoolAnalysis, Forces, PoolConfig } from "../types";
 import { intervalVolume } from "../data/gecko";
 import { computeRange } from "./range";
 import { SECONDS_PER_YEAR, DEFAULT_FEE } from "../config/params";
-import { log, pct, usd } from "../utils";
+import { fmtPct as pct, fmtUsd as usd } from "../../shared/format";
+import { log } from "../utils";
 
 /**
  * Compute pool analyses for all pools.
