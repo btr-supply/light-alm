@@ -103,7 +103,7 @@ export interface Position {
 }
 
 export interface TxLogEntry {
-  id: number;
+  id?: number;
   ts: number;
   decisionType: DecisionType;
   opType: "burn" | "mint" | "swap";
@@ -142,15 +142,51 @@ export interface EpochSnapshot {
   positionsCount: number;
 }
 
+// ---- Config wire types (shared between backend and dashboard) ----
+
+export interface PairConfigEntry {
+  id: string;
+  pools: { chain: number; address: string; dex: string }[];
+  intervalSec: number;
+  maxPositions: number;
+  thresholds: { pra: number; rs: number };
+  forceParams?: Record<string, unknown>;
+}
+
+export interface StrategyConfigEntry {
+  name: string;
+  pairId: string;
+  pkEnvVar: string;
+  pools: { chain: number; address: string; dex: string }[];
+  intervalSec: number;
+  maxPositions: number;
+  thresholds: { pra: number; rs: number };
+  forceParams?: Record<string, unknown>;
+  gasReserves?: Record<number, number>;
+  allocationPct?: number;
+  rpcOverrides?: Record<number, string[]>;
+}
+
+export interface DexMetadata {
+  id: string;
+  name: string;
+  ammType: string;
+  poolTypes: string[];
+  landingUrl?: string;
+  twitterUrl?: string;
+}
+
 // ---- Dashboard compound types ----
 
-export interface PairSummary {
-  id: string;
+export interface StrategySummary {
+  name: string;
+  pairId: string;
+  status: string;
+  tvlUsd: number;
+  apy: number;
   positions: number;
   decision: DecisionType;
   decisionTs: number;
-  currentApr: number;
-  optimalApr: number;
   epoch: number;
 }
 
@@ -163,4 +199,38 @@ export interface PairStatus {
   optimizer: { params: RangeParams; fitness: number };
   regime: RegimeState | null;
   killSwitch: { active: boolean; reason: string } | null;
+}
+
+export interface StrategyStatus extends PairStatus {
+  name: string;
+  pairId: string;
+  status: string;
+  currentApr: number;
+  optimalApr: number;
+}
+
+export interface ClusterWorker {
+  id: string;
+  workerType: "collector" | "strategy";
+  status: string;
+  pid: number;
+  uptimeMs: number;
+  alive: boolean;
+  errorMsg?: string;
+}
+
+export interface ClusterOverview {
+  workers: number;
+  uptime: number;
+  collectors: ClusterWorker[];
+  strategies: ClusterWorker[];
+}
+
+export interface OptimalRange {
+  pool: string;
+  chain: ChainId;
+  rangeMin: number;
+  rangeMax: number;
+  confidence: number;
+  ts: number;
 }

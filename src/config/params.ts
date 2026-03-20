@@ -24,19 +24,26 @@ export const RSI_PERIOD = 14;
 export const TREND_SCALE = 1000;
 export const VFORCE_SIGMOID_SCALE = 60;
 
+// ---- Time Constants ----
+
+export const HOUR_MS = 3_600_000;
+export const DAY_MS = 86_400_000;
+
 // ---- Decision ----
 
-export const MIN_HOLD_MS = 12 * 3600_000; // 12h minimum holding period
+export const MIN_HOLD_MS = 12 * HOUR_MS; // 12h minimum holding period
 export const DEFAULT_PRA_THRESHOLD = 0.05; // 5% APR improvement to trigger PRA
 export const DEFAULT_RS_THRESHOLD = 0.25; // 25% range divergence to trigger RS
-export const DEFAULT_INTERVAL_SEC = 900; // 15 min cycle interval
+export const DEFAULT_CYCLE_SEC = 900; // 15 min cycle interval
 export const DEFAULT_MAX_POSITIONS = 3;
+export const MIN_ABSOLUTE_APR_GAIN = 0.005; // 0.5% absolute floor
+export const PRA_GAS_MULT = 1.5; // Gas-cost safety multiplier for PRA
+export const RS_GAS_MULT = 2.0; // Gas-cost safety multiplier for RS
+export const AMORTIZE_DAYS = 7; // Days to amortize gas cost over
 
 // ---- Optimizer (Nelder-Mead) ----
 
-export const CANDLES_1H = 60; // M1 candles in 1 hour
-export const TRAILING_EPOCHS = 24; // 6h of 15min epochs
-export const EPOCH_SEC = 900; // 15 min
+export const M1_PER_HOUR = 60; // M1 candles in 1 hour
 
 export const OPT_BOUNDS: { lo: number; hi: number }[] = [
   { lo: 0.0001, hi: 0.005 }, // baseMin
@@ -51,54 +58,72 @@ export const NM_GAMMA = 2.0; // expansion
 export const NM_RHO = 0.5; // contraction
 export const NM_SIGMA = 0.5; // shrink
 export const NM_MAX_EVALS = 300;
+export const NM_RESTARTS = 3; // total NM runs: 1 warm-start + (N-1) random starts
 export const NM_TOL = 1e-8;
 
 // ---- Fitness Simulation ----
 
+export const SIM_BAR_SEC = 900; // M15 bar period (simulation always receives M15 candles)
+export const SIM_BARS_PER_DAY = 96; // SECONDS_PER_DAY / SIM_BAR_SEC
+export const SIM_BARS_PER_YEAR = 365.25 * SIM_BARS_PER_DAY; // ~35064
+export const SIM_VOL_LOOKBACK = 24; // trailing vol window in sim: 24 M15 bars = 6h
+export const SIM_MIN_REBAL_GAP = 4; // minimum sim bars between range shifts
 export const FITNESS_MIN_CANDLES = 20;
 export const FITNESS_TRAIN_SPLIT = 0.8;
 export const FITNESS_OVERFIT_RATIO = 0.8;
-export const FITNESS_MIN_RS_GAP = 4; // minimum epochs between range shifts
 export const FITNESS_SWAP_FRICTION = 0.001; // base swap cost fraction
+export const FEE_CONCENTRATION_CAP = 20; // max fee multiplier from LP concentration
 
 // ---- Regime Detection ----
 
 export const REGIME_VOL_SIGMA_MULT = 3;
-export const REGIME_SUPPRESS_EPOCHS = 4;
+export const REGIME_SUPPRESS_CYCLES = 4;
 export const REGIME_DISPLACEMENT_STABLE = 0.02;
-export const REGIME_DISPLACEMENT_VOLATILE = 0.1;
-export const REGIME_EPOCH_CANDLES = 15; // M1 candles per epoch (15min)
+export const REGIME_DISPLACEMENT_VOLATILE = 0.1; // fallback when no vol history
+export const REGIME_DISPLACEMENT_VOL_MULT = 4; // σ-multiples for vol-relative threshold
+export const REGIME_DISPLACEMENT_MIN = 0.02; // 2% floor for volatile pairs
+export const REGIME_VOL_WINDOW = 15; // M1 candle count for volume anomaly detection window
 export const REGIME_VOLUME_ANOMALY_MULT = 5;
 export const REGIME_WIDEN_FACTOR = 1.5;
 export const REGIME_MIN_HOURLY_SAMPLES = 10;
 
 // ---- Kill-Switch ----
 
-export const KS_RS_WINDOW_MS = 4 * 3600_000; // 4h trailing window
+export const KS_YIELD_WINDOW_MS = 6 * HOUR_MS; // kill-switch yield lookback (time-based)
+export const KS_RS_WINDOW_MS = 4 * HOUR_MS; // 4h trailing window
 export const KS_MAX_RS_COUNT = 8;
 export const KS_PATHOLOGICAL_MIN = 0.001;
 export const KS_GAS_BUDGET_PCT = 0.05; // 5% of position value
 
-// ---- Allocation (Water-Fill) ----
+// ---- Allocation ----
 
-export const BISECT_MAX_ITERS = 64;
-export const BISECT_LO = 0.0001;
-export const BISECT_CONVERGENCE_TOL = 1e-10;
 export const ALLOC_MIN_PCT = 0.001;
 
 // ---- Execution Cost Estimates ----
 
-export const POSITION_VALUE_USD = 10_000;
+export const DEFAULT_CAPITAL_USD = 10_000;
+export const CASH_RESERVE_PCT = 0.05;
 export const IMBALANCE_THRESHOLD = 0.05;
 
 // ---- M1 Candle Constants ----
 
 export const TF = "1m";
 export const TF_MS = 60_000;
-export const BACKFILL_DAYS = 30;
-export const BACKFILL_MS = BACKFILL_DAYS * 24 * 60 * 60 * 1000;
 export const SECONDS_PER_YEAR = 365.25 * 24 * 3600;
-export const SECONDS_PER_DAY = 86400;
+export const SECONDS_PER_DAY = DAY_MS / 1000;
+
+// ---- Data Buffer ----
+
+export const OPT_LOOKBACK_DAYS = 60; // optimizer training window (~2 months)
+export const OPT_LOOKBACK_MS = OPT_LOOKBACK_DAYS * DAY_MS;
+export const CANDLE_BUFFER_DAYS = OPT_LOOKBACK_DAYS + 14; // total M1 data in memory
+export const CANDLE_BUFFER_MS = CANDLE_BUFFER_DAYS * DAY_MS;
+
+// ---- Aggregation Periods ----
+
+export const M15_MS = 900_000; // 15-min aggregation period
+export const H1_MS = 3_600_000; // 1-hour aggregation period
+export const H4_MS = 14_400_000; // 4-hour aggregation period
 export const DEFAULT_FEE = 0.0005; // 5bp fallback when on-chain fee read fails
 
 // Candle counts per timeframe for force lookbacks
@@ -111,18 +136,14 @@ export const MTF_CANDLES = {
 // ---- OHLC Fetching ----
 
 export const OHLC_FETCH_LIMIT = 500;
-export const OHLC_MAX_ITERATIONS = 100;
+export const OHLC_MAX_ITERATIONS = 200;
 export const OHLC_LATEST_LOOKBACK_CANDLES = 20;
+export const EXCHANGE_RATE_LIMIT_MS = 200;
 
 // ---- GeckoTerminal ----
 
 export const GECKO_API_BASE = "https://api.geckoterminal.com/api/v2";
 export const GECKO_RATE_LIMIT_MS = 2000;
-
-// ---- Epochs ----
-
-export const EPOCHS_PER_DAY = 96;
-export const EPOCHS_PER_YEAR = 365.25 * EPOCHS_PER_DAY;
 
 // ---- TX Execution ----
 
@@ -132,7 +153,7 @@ export const BPS_DIVISOR = 10000n;
 export const GAS_BUFFER_NUM = 120n;
 export const GAS_BUFFER_DEN = 100n;
 export const TX_RECEIPT_TIMEOUT_MS = 120_000;
-export const PERMIT2_EXPIRY_SEC = 86400 * 30; // 30 days
+export const PERMIT2_EXPIRY_SEC = SECONDS_PER_DAY * 30; // 30 days
 
 export const txDeadline = () => BigInt(Math.floor(Date.now() / 1000) + TX_DEADLINE_SEC);
 
@@ -183,6 +204,10 @@ export const V4_MAX_TICK = 887272;
 
 export const FEE_PRECISION = 1_000_000;
 
+// ---- Catch-Up ----
+
+export const CATCHUP_MAX_MS = 7 * DAY_MS; // max strategy catch-up window
+
 // ---- Orchestrator / Worker ----
 
 export const ORCHESTRATOR_LOCK_TTL = 30_000;
@@ -193,12 +218,25 @@ export const WORKER_HEARTBEAT_INTERVAL = 15_000;
 export const WORKER_HEARTBEAT_TTL = 45_000; // 3x heartbeat interval for one-miss tolerance
 export const WORKER_STATE_TTL_MS = 60_000; // Auto-expire stale worker state
 export const SHUTDOWN_GRACE_MS = 30_000;
+export const COLLECTOR_DATA_TTL_MS = HOUR_MS; // 1 hour — outlasts any collection interval
+export const SUBSCRIBER_RECONNECT_MS = 15_000;
+export const RESTARTING_KEY_TTL_MS = 60_000;
+export const COLLECTOR_STARTUP_DELAY_MS = 2000;
+export const MAX_RESPAWN_BACKOFF_MS = 300_000;
+export const MAX_FAIL_COUNT = 20;
 
 // ---- API ----
 
-export const DEFAULT_API_PORT = 3001;
-export const DEFAULT_CANDLE_WINDOW_MS = 24 * 3600_000;
+export const DEFAULT_API_PORT = 40042;
+export const DEFAULT_CANDLE_WINDOW_MS = 24 * HOUR_MS;
 export const DEFAULT_TXLOG_LIMIT = 50;
+
+// ---- API Validation ----
+
+/** Matches 0x-prefixed 20-byte (40 hex) addresses and V4 32-byte (64 hex) pool IDs */
+export const POOL_ADDRESS_RE = /^0x[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$/;
+export const INTERVAL_SEC_RANGE = { min: 60, max: 86400 } as const;
+export const MAX_POSITIONS_RANGE = { min: 1, max: 20 } as const;
 
 // ---- Infrastructure ----
 
@@ -211,12 +249,12 @@ export const FETCH_TIMEOUT_MS = 30_000;
 
 // ---- Retry Defaults ----
 
-export const DEFAULT_RETRY_COUNT = 3;
-export const DEFAULT_RETRY_BACKOFF_MS = 2000;
-export const BURN_RETRY_COUNT = 1;
-export const BURN_RETRY_BACKOFF_MS = 3000;
-export const MINT_RETRY_COUNT = 1;
-export const MINT_RETRY_BACKOFF_MS = 5000;
+export const RETRY = {
+  default: { count: 3, backoffMs: 2000 },
+  burn: { count: 1, backoffMs: 3000 },
+  mint: { count: 1, backoffMs: 5000 },
+} as const;
+
 
 // ---- Executor (Fallback Range) ----
 

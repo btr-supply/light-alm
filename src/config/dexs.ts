@@ -3,15 +3,16 @@ import { type DexId, type DexFamily, DexId as DI, DexFamily as DF } from "../typ
 // Re-export ABIs from dedicated file
 export { ABIS } from "./abis";
 
-// DEX registry: slug -> type + chain-specific addresses
+// DEX registry: slug -> family, type, chain-specific PM addresses
 interface DEXEntry {
+  family: DexFamily;
   type: "univ3" | "algebra" | "lb";
   positionManager: Record<number, `0x${string}`>;
 }
 
 export const dexes: Record<string, DEXEntry> = {
   [DI.UNI_V3]: {
-    type: "univ3",
+    family: DF.V3, type: "univ3",
     positionManager: {
       1: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
       56: "0x7b8A01B39D58278b5DE7e48c8449c9f4F5170613",
@@ -22,7 +23,7 @@ export const dexes: Record<string, DEXEntry> = {
     },
   },
   [DI.PCS_V3]: {
-    type: "univ3",
+    family: DF.V3, type: "univ3",
     positionManager: {
       1: "0x46A15B0b27311cedF172AB29E4f4766fbE7F4364",
       56: "0x46A15B0b27311cedF172AB29E4f4766fbE7F4364",
@@ -31,72 +32,51 @@ export const dexes: Record<string, DEXEntry> = {
     },
   },
   [DI.AERO_V3]: {
-    type: "univ3",
-    positionManager: {
-      8453: "0x827922686190790b37229fd06084350E74485b72",
-    },
+    family: DF.AERODROME, type: "univ3",
+    positionManager: { 8453: "0x827922686190790b37229fd06084350E74485b72" },
   },
   [DI.CAMELOT_V3]: {
-    type: "algebra",
-    positionManager: {
-      42161: "0x00c7f3082833e796A5b3e4Bd59f6642FF44DCD15",
-    },
+    family: DF.ALGEBRA, type: "algebra",
+    positionManager: { 42161: "0x00c7f3082833e796A5b3e4Bd59f6642FF44DCD15" },
   },
   [DI.QUICKSWAP_V3]: {
-    type: "algebra",
-    positionManager: {
-      137: "0x8eF88E4c7CfbbaC1C163f7eddd4B578792201de6",
-    },
+    family: DF.ALGEBRA, type: "algebra",
+    positionManager: { 137: "0x8eF88E4c7CfbbaC1C163f7eddd4B578792201de6" },
   },
   [DI.RAMSES_V3]: {
-    type: "univ3",
+    family: DF.V3, type: "univ3",
     positionManager: {
       42161: "0xAA277CB7914b7e5514946Da92cb9De332Ce610EF",
       999: "0xB3F77C5134D643483253D22E0Ca24627aE42ED51",
     },
   },
   [DI.PANGOLIN_V3]: {
-    type: "univ3",
-    positionManager: {
-      43114: "0xf40937279F38D0c1f97aFA5919F1cB3cB7f06A7F",
-    },
+    family: DF.V3, type: "univ3",
+    positionManager: { 43114: "0xf40937279F38D0c1f97aFA5919F1cB3cB7f06A7F" },
   },
   [DI.BLACKHOLE_V3]: {
-    type: "algebra",
-    positionManager: {
-      43114: "0x3fED017EC0f5517Cdf2E8a9a4156c64d74252146",
-    },
+    family: DF.ALGEBRA, type: "algebra",
+    positionManager: { 43114: "0x3fED017EC0f5517Cdf2E8a9a4156c64d74252146" },
   },
   [DI.PHARAOH_V3]: {
-    type: "univ3",
-    positionManager: {
-      43114: "0xAAA78E8C4241990B4ce159E105dA08129345946A",
-    },
+    family: DF.V3, type: "univ3",
+    positionManager: { 43114: "0xAAA78E8C4241990B4ce159E105dA08129345946A" },
   },
   [DI.PROJECT_X_V3]: {
-    type: "univ3",
-    positionManager: {
-      999: "0xead19ae861c29bbb2101e834922b2feee69b9091",
-    },
+    family: DF.V3, type: "univ3",
+    positionManager: { 999: "0xead19ae861c29bbb2101e834922b2feee69b9091" },
   },
   [DI.JOE_V2]: {
-    type: "lb",
-    positionManager: {
-      // LB router addresses
-      43114: "0xE3Ffc583dC176575eEA7FD9dF2A7c65F7E23f4C3",
-    },
+    family: DF.LB, type: "lb",
+    positionManager: { 43114: "0xE3Ffc583dC176575eEA7FD9dF2A7c65F7E23f4C3" },
   },
   [DI.JOE_V21]: {
-    type: "lb",
-    positionManager: {
-      43114: "0xb4315e873dBcf96Ffd0acd8EA43f689D8c20fB30",
-    },
+    family: DF.LB, type: "lb",
+    positionManager: { 43114: "0xb4315e873dBcf96Ffd0acd8EA43f689D8c20fB30" },
   },
   [DI.JOE_V22]: {
-    type: "lb",
-    positionManager: {
-      43114: "0x18556DA13313f3532c54711497A8FedAC273220E",
-    },
+    family: DF.LB, type: "lb",
+    positionManager: { 43114: "0x18556DA13313f3532c54711497A8FedAC273220E" },
   },
 };
 
@@ -105,6 +85,21 @@ export const getDex = (slug: string) => {
   if (!d) throw new Error(`Unknown DEX: ${slug}`);
   return d;
 };
+
+// V4 DEXes don't use the dexes registry (different PM architecture)
+const V4_FAMILIES: Record<string, DexFamily> = {
+  [DI.UNI_V4]: DF.V4,
+  [DI.HYBRA_V4]: DF.V4,
+  [DI.PCS_V4]: DF.PCS_V4,
+};
+
+// Unified family lookup: covers both registry DEXes and V4
+export const DEX_FAMILY: Record<DexId, DexFamily> = {
+  ...Object.fromEntries(Object.entries(dexes).map(([id, e]) => [id, e.family])),
+  ...V4_FAMILIES,
+} as Record<DexId, DexFamily>;
+
+export const getDexFamily = (id: DexId): DexFamily => DEX_FAMILY[id];
 
 // ---- V4 lens contracts ----
 
@@ -137,25 +132,30 @@ export const PCS_V4_POSITION_MANAGER: Record<number, `0x${string}`> = {
   56: "0x55f4c8abA71A1e923edC303eb4fEfF14608cC226",
 };
 
-// ---- DexId → DexFamily mapping ----
+// ---- DEX display metadata (for DragonflyDB seeding) ----
 
-export const DEX_FAMILY: Record<DexId, DexFamily> = {
-  [DI.UNI_V3]: DF.V3,
-  [DI.PCS_V3]: DF.V3,
-  [DI.PANGOLIN_V3]: DF.V3,
-  [DI.BLACKHOLE_V3]: DF.ALGEBRA,
-  [DI.PHARAOH_V3]: DF.V3,
-  [DI.PROJECT_X_V3]: DF.V3,
-  [DI.RAMSES_V3]: DF.V3,
-  [DI.AERO_V3]: DF.AERODROME,
-  [DI.CAMELOT_V3]: DF.ALGEBRA,
-  [DI.QUICKSWAP_V3]: DF.ALGEBRA,
-  [DI.UNI_V4]: DF.V4,
-  [DI.HYBRA_V4]: DF.V4,
-  [DI.PCS_V4]: DF.PCS_V4,
-  [DI.JOE_V2]: DF.LB,
-  [DI.JOE_V21]: DF.LB,
-  [DI.JOE_V22]: DF.LB,
+const FAMILY_DISPLAY: Record<DexFamily, { ammType: string; poolTypes: string[] }> = {
+  [DF.V3]: { ammType: "CLMM", poolTypes: ["v3"] },
+  [DF.ALGEBRA]: { ammType: "CLMM", poolTypes: ["algebra"] },
+  [DF.AERODROME]: { ammType: "CLMM", poolTypes: ["aerodrome"] },
+  [DF.V4]: { ammType: "CLMM", poolTypes: ["v4"] },
+  [DF.PCS_V4]: { ammType: "CLMM", poolTypes: ["pcs-v4"] },
+  [DF.LB]: { ammType: "LB", poolTypes: ["lb"] },
 };
 
-export const getDexFamily = (id: DexId): DexFamily => DEX_FAMILY[id];
+const DEX_NAMES: Record<string, string> = {
+  [DI.UNI_V3]: "Uniswap V3", [DI.PCS_V3]: "PancakeSwap V3", [DI.AERO_V3]: "Aerodrome V3",
+  [DI.CAMELOT_V3]: "Camelot V3", [DI.QUICKSWAP_V3]: "QuickSwap V3", [DI.RAMSES_V3]: "Ramses V3",
+  [DI.PANGOLIN_V3]: "Pangolin V3", [DI.BLACKHOLE_V3]: "Blackhole V3", [DI.PHARAOH_V3]: "Pharaoh V3",
+  [DI.PROJECT_X_V3]: "Project X V3", [DI.UNI_V4]: "Uniswap V4", [DI.HYBRA_V4]: "Hybra V4",
+  [DI.PCS_V4]: "PancakeSwap V4", [DI.JOE_V2]: "Trader Joe V2", [DI.JOE_V21]: "Trader Joe V2.1",
+  [DI.JOE_V22]: "Trader Joe V2.2",
+};
+
+export const DEX_DISPLAY_NAMES: Record<string, { name: string; ammType: string; poolTypes: string[] }> =
+  Object.fromEntries(
+    Object.entries(DEX_FAMILY).map(([id, fam]) => [
+      id,
+      { name: DEX_NAMES[id] ?? id, ...FAMILY_DISPLAY[fam] },
+    ]),
+  );

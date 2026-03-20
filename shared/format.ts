@@ -1,6 +1,6 @@
-// Shared formatting utilities and constants between backend and dashboard.
+// Shared formatting utilities between backend and dashboard.
 
-export const GAS_COST_USD = 0.5;
+export { chainName, chainGasCostUsd } from "./chains";
 
 export const cap = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
 export const fmtPct = (v: number, decimals = 2) => `${(v * 100).toFixed(decimals)}%`;
@@ -14,19 +14,60 @@ export const shortAddr = (addr: string, front = 6, back = 4) =>
   back > 0 ? `${addr.slice(0, front)}...${addr.slice(-back)}` : `${addr.slice(0, front)}...`;
 export const fmtTime = (ts: number) =>
   ts ? new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "-";
-
-export const CHAIN_NAME: Record<number, string> = {
-  1: "Ethereum",
-  56: "BSC",
-  8453: "Base",
-  42161: "Arbitrum",
-  43114: "Avalanche",
-  137: "Polygon",
-  999: "HyperEVM",
+export const fmtDuration = (ms: number, detailed = false): string => {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (detailed && s < 86400) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  return `${Math.floor(s / 86400)}d`;
 };
 
-export const chainName = (id: number) => CHAIN_NAME[id] ?? `Chain ${id}`;
 export const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+// ---- Candle aggregation ----
+
+import type { Candle } from "./types";
+
+/** Aggregate candles into higher timeframes by period in milliseconds. */
+export function aggregateCandles(source: Candle[], periodMs: number): Candle[] {
+  const buckets = new Map<number, Candle>();
+  for (const c of source) {
+    const key = Math.floor(c.ts / periodMs) * periodMs;
+    const existing = buckets.get(key);
+    if (!existing) {
+      buckets.set(key, { ts: key, o: c.o, h: c.h, l: c.l, c: c.c, v: c.v });
+    } else {
+      existing.h = Math.max(existing.h, c.h);
+      existing.l = Math.min(existing.l, c.l);
+      existing.c = c.c;
+      existing.v += c.v;
+    }
+  }
+  return [...buckets.values()].sort((a, b) => a.ts - b.ts);
+}
+
+// ---- Simple moving average (sliding window, O(n)) ----
+
+export function sma(values: number[], period: number): number[] {
+  if (period > values.length) return [];
+  const r: number[] = [];
+  let sum = 0;
+  for (let i = 0; i < period; i++) sum += values[i];
+  r.push(sum / period);
+  for (let i = period; i < values.length; i++) {
+    sum += values[i] - values[i - period];
+    r.push(sum / period);
+  }
+  return r;
+}
+
+// ---- Pair ID parsing ----
+
+export function pairTokens(pairId: string): [string, string] {
+  const parts = pairId.split(/[-_/]/);
+  return parts.length >= 2 ? [parts[0], parts[1]] : ["Token A", "Token B"];
+}
 
 // ---- Tick math (Uniswap V3 tick base) ----
 

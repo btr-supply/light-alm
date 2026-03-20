@@ -21,10 +21,10 @@ export type { ChainId, DecisionType, Forces, RangeParams, RegimeState, Candle };
 export interface ChainConfig {
   id: ChainId;
   name: string;
-  rpc: string;
-  gecko: string; // GeckoTerminal network slug
-  blockTimeMs: number;
-  nativeSymbol: string;
+  rpcs: string[];
+  gecko?: string; // GeckoTerminal network slug
+  blockTimeMs?: number;
+  nativeSymbol?: string;
 }
 
 // ---- DEX ----
@@ -97,18 +97,34 @@ export interface PoolConfig {
   dex: DexId;
 }
 
-// ---- Pair ----
+// ---- Base strategy fields (shared by PairConfig and StrategyConfig) ----
 
-export interface PairConfig {
-  id: string; // e.g. "USDC-USDT"
+interface BaseStrategyFields {
   token0: TokenConfig;
   token1: TokenConfig;
-  eoaEnvVar: string; // env var name for private key
   pools: PoolConfig[];
-  intervalSec: number; // default 900
-  maxPositions: number; // default 3
-  thresholds: { pra: number; rs: number }; // default 0.05, 0.25
+  intervalSec: number;
+  maxPositions: number;
+  thresholds: { pra: number; rs: number };
   forceParams?: Partial<ForceParams>;
+}
+
+// ---- Pair (collector-level config) ----
+
+export interface PairConfig extends BaseStrategyFields {
+  id: string; // e.g. "USDC-USDT"
+  eoaEnvVar: string; // env var name for private key (legacy, used by collectors in standalone mode)
+}
+
+// ---- Strategy (per-strategy config, may share a pair with other strategies) ----
+
+export interface StrategyConfig extends BaseStrategyFields {
+  name: string; // e.g. "V1"
+  pairId: string; // e.g. "USDC-USDT"
+  pkEnvVar: string; // e.g. "V1_PK"
+  gasReserves?: Record<number, number>;
+  allocationPct?: number;
+  rpcOverrides?: Record<number, string[]>;
 }
 
 // ---- Force Model (Forces re-exported from @shared/types) ----
@@ -263,8 +279,3 @@ export type TxLogEntry = Omit<
   "id" | "pool" | "txHash" | "gasUsed" | "gasPrice"
 > & { id?: number; pool: `0x${string}`; txHash: `0x${string}`; gasUsed: bigint; gasPrice: bigint };
 
-export function findPool(pair: PairConfig, pool: `0x${string}`, chain: number): PoolConfig {
-  const found = pair.pools.find((p) => p.address === pool && p.chain === chain);
-  if (!found) throw new Error(`Pool not found: ${pool} on chain ${chain}`);
-  return found;
-}

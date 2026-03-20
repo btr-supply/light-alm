@@ -1,4 +1,4 @@
-import { DexId, DexFamily, type PoolEntry, type PoolConfig } from "../types";
+import { DexId, DexFamily, type PoolEntry, type PoolConfig, type PairConfig } from "../types";
 import { getDex, getDexFamily, V4_POSITION_MANAGER, PCS_V4_POSITION_MANAGER } from "./dexs";
 import { log } from "../utils";
 
@@ -264,4 +264,10 @@ export function toPoolConfigs(entries: PoolEntry[]): PoolConfig[] {
       chain: e.chain,
       dex: e.dex,
     }));
+}
+
+export function findPool(pair: PairConfig, pool: `0x${string}`, chain: number): PoolConfig {
+  const found = pair.pools.find((p) => p.address === pool && p.chain === chain);
+  if (!found) throw new Error(`Pool not found: ${pool} on chain ${chain}`);
+  return found;
 }
