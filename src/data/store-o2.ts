@@ -8,55 +8,107 @@ import type {
   DecisionType,
 } from "../types";
 import type { EpochSnapshot } from "../../shared/types";
-import { O2_FETCH_TIMEOUT_MS, EPOCHS_PER_YEAR } from "../config/params";
-import { errMsg } from "../utils";
+import { O2_FETCH_TIMEOUT_MS, SECONDS_PER_YEAR } from "../config/params";
+import { errMsg } from "../../shared/format";
+
+// ---- O2 Column Remapping ----
+// OpenObserve lowercases all column names during ingestion.
+// This map converts them back to camelCase for TypeScript consumption.
+
+const O2_REMAP: Record<string, string> = {
+  feepct: "feePct",
+  basepriceusd: "basePriceUsd",
+  quotepriceusd: "quotePriceUsd",
+  exchangerate: "exchangeRate",
+  pricechangeh1: "priceChangeH1",
+  pricechangeh24: "priceChangeH24",
+  intervalvolume: "intervalVolume",
+  feesgenerated: "feesGenerated",
+  rangemin: "rangeMin",
+  rangemax: "rangeMax",
+  rangebreadth: "rangeBreadth",
+  rangebias: "rangeBias",
+  rangeconfidence: "rangeConfidence",
+  pairid: "pairId",
+  currentapr: "currentApr",
+  optimalapr: "optimalApr",
+  targetallocations: "targetAllocations",
+  currentallocations: "currentAllocations",
+  portfoliovalueusd: "portfolioValueUsd",
+  feesearnedusd: "feesEarnedUsd",
+  gasspentusd: "gasSpentUsd",
+  ilusd: "ilUsd",
+  netpnlusd: "netPnlUsd",
+  rangeefficiency: "rangeEfficiency",
+  positionscount: "positionsCount",
+  strategyname: "strategyName",
+  decisiontype: "decisionType",
+  optype: "opType",
+  txhash: "txHash",
+  gasused: "gasUsed",
+  gasprice: "gasPrice",
+  inputtoken: "inputToken",
+  inputamount: "inputAmount",
+  inputusd: "inputUsd",
+  outputtoken: "outputToken",
+  outputamount: "outputAmount",
+  outputusd: "outputUsd",
+  targetallocationpct: "targetAllocationPct",
+  actualallocationpct: "actualAllocationPct",
+  allocationerrorpct: "allocationErrorPct",
+  volume24h: "volume24h",
+};
 
 // ---- O2 SQL Query Engine ----
 
-/** Escape a string for safe SQL interpolation (prevents injection). */
 function esc(s: string): string {
   return s.replace(/'/g, "''");
 }
 
-/** Execute a SQL query against OpenObserve's search API. Returns empty array on failure. */
-async function queryO2<T>(
-  sql: string,
-  size = 1000,
-): Promise<T[]> {
+/** Query window in microseconds — 1 year to avoid O2 partition scan gaps at intermediate ranges */
+const QUERY_WINDOW_US = 365 * 86_400_000 * 1000;
+
+async function queryO2<T>(sql: string, size = 1000): Promise<T[]> {
   const url = process.env.O2_URL;
   const org = process.env.O2_ORG || "default";
   const token = process.env.O2_TOKEN;
   if (!url || !token) return [];
 
+  const now = Date.now() * 1000; // μs
   const body = {
     query: {
       sql,
       from: 0,
       size,
-      start_time: 0,
-      end_time: Date.now() * 1000, // μs
+      start_time: now - QUERY_WINDOW_US,
+      end_time: now,
     },
   };
 
   try {
-    const res = await fetch(
-      `${url.replace(/\/$/, "")}/api/${org}/_search?type=logs`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Basic ${token}`,
-        },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(O2_FETCH_TIMEOUT_MS),
+    const res = await fetch(`${url.replace(/\/$/, "")}/api/${org}/_search?type=logs`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Basic ${token}`,
       },
-    );
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(O2_FETCH_TIMEOUT_MS),
+    });
     if (!res.ok) {
       console.error(`O2 query failed: ${res.status} ${res.statusText}`);
       return [];
     }
-    const result = (await res.json()) as { hits: T[] };
-    return result.hits ?? [];
+    const result = (await res.json()) as { hits: Record<string, unknown>[] };
+    const hits = result.hits ?? [];
+    if (!hits.length) return [];
+    return hits.map((row) => {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(row)) {
+        out[O2_REMAP[k] ?? k] = v;
+      }
+      return out as T;
+    });
   } catch (e) {
     console.error(`O2 query error: ${errMsg(e)}`);
     return [];
@@ -65,11 +117,7 @@ async function queryO2<T>(
 
 // ---- Candles ----
 
-export async function getCandles(
-  pair: string,
-  fromTs: number,
-  toTs: number,
-): Promise<Candle[]> {
+export async function getCandles(pair: string, fromTs: number, toTs: number): Promise<Candle[]> {
   return queryO2<Candle>(
     `SELECT ts, o, h, l, c, v FROM candles WHERE pair = '${esc(pair)}' AND ts >= ${fromTs} AND ts <= ${toTs} ORDER BY ts ASC`,
     50000,
@@ -84,7 +132,7 @@ export async function getLastSnapshot(
   beforeTs: number,
 ): Promise<PoolSnapshot | null> {
   const rows = await queryO2<PoolSnapshot>(
-    `SELECT pool, chain, ts, volume24h, tvl, feePct, basePriceUsd, quotePriceUsd, exchangeRate, priceChangeH1, priceChangeH24 FROM pool_snapshots WHERE pool = '${esc(pool)}' AND chain = ${chain} AND ts < ${beforeTs} ORDER BY ts DESC`,
+    `SELECT pool, chain, ts, volume24h, tvl, feepct, basepriceusd, quotepriceusd, exchangerate, pricechangeh1, pricechangeh24 FROM pool_snapshots WHERE pool = '${esc(pool)}' AND chain = ${chain} AND ts < ${beforeTs} ORDER BY ts DESC`,
     1,
   );
   return rows[0] ?? null;
@@ -92,32 +140,45 @@ export async function getLastSnapshot(
 
 // ---- Pool Analyses ----
 
+const POOL_ANALYSIS_COLS =
+  "pool, chain, ts, intervalvolume, feepct, feesgenerated, tvl, utilization, apr, exchangerate, basepriceusd, vforce, mforce, tforce, rangemin, rangemax, rangebreadth, rangebias, rangeconfidence";
+
 export async function getPoolAnalyses(
   pool: string,
   chain: number,
   fromTs?: number,
   toTs?: number,
 ): Promise<PoolAnalysis[]> {
-  let sql = `SELECT pool, chain, ts, intervalVolume, feePct, feesGenerated, tvl, utilization, apr, exchangeRate, basePriceUsd, vforce, mforce, tforce, rangeMin, rangeMax, rangeBreadth, rangeBias, rangeConfidence FROM pool_analyses WHERE pool = '${esc(pool)}' AND chain = ${chain}`;
+  let sql = `SELECT ${POOL_ANALYSIS_COLS} FROM pool_analyses WHERE pool = '${esc(pool)}' AND chain = ${chain}`;
   if (fromTs !== undefined) sql += ` AND ts >= ${fromTs}`;
   if (toTs !== undefined) sql += ` AND ts <= ${toTs}`;
   sql += ` ORDER BY ts ASC`;
   return queryO2<PoolAnalysis>(sql);
 }
 
-export async function getLatestAnalysesForPools(
+export async function getPoolAnalysesByPair(
   pairId: string,
+  fromTs: number,
+  toTs: number,
 ): Promise<PoolAnalysis[]> {
   return queryO2<PoolAnalysis>(
-    `SELECT pool, chain, ts, intervalVolume, feePct, feesGenerated, tvl, utilization, apr, exchangeRate, basePriceUsd, vforce, mforce, tforce, rangeMin, rangeMax, rangeBreadth, rangeBias, rangeConfidence FROM pool_analyses WHERE pairId = '${esc(pairId)}' AND ts = (SELECT MAX(ts) FROM pool_analyses WHERE pairId = '${esc(pairId)}')`,
+    `SELECT ${POOL_ANALYSIS_COLS}, pairid FROM pool_analyses WHERE pairid = '${esc(pairId)}' AND ts >= ${fromTs} AND ts <= ${toTs} ORDER BY ts ASC`,
+    5000,
+  );
+}
+
+export async function getLatestAnalysesForPools(pairId: string): Promise<PoolAnalysis[]> {
+  return queryO2<PoolAnalysis>(
+    `SELECT ${POOL_ANALYSIS_COLS} FROM pool_analyses WHERE pairid = '${esc(pairId)}' AND ts = (SELECT MAX(ts) FROM pool_analyses WHERE pairid = '${esc(pairId)}')`,
   );
 }
 
 // ---- Pair Allocations ----
 
-export async function getLatestPairAllocation(
-  pairId: string,
-): Promise<PairAllocation | null> {
+const PAIR_ALLOC_COLS =
+  "ts, currentapr, optimalapr, improvement, decision, targetallocations, currentallocations";
+
+export async function getLatestPairAllocation(pairId: string): Promise<PairAllocation | null> {
   const rows = await queryO2<{
     ts: number;
     currentApr: number;
@@ -127,17 +188,14 @@ export async function getLatestPairAllocation(
     targetAllocations: string;
     currentAllocations: string;
   }>(
-    `SELECT ts, currentApr, optimalApr, improvement, decision, targetAllocations, currentAllocations FROM pair_allocations WHERE pairId = '${esc(pairId)}' ORDER BY ts DESC`,
+    `SELECT ${PAIR_ALLOC_COLS} FROM pair_allocations WHERE pairid = '${esc(pairId)}' ORDER BY ts DESC`,
     1,
   );
   if (!rows.length) return null;
   return mapPairAllocRow(rows[0]);
 }
 
-export async function getPairAllocations(
-  pairId: string,
-  limit = 50,
-): Promise<PairAllocation[]> {
+export async function getPairAllocations(pairId: string, limit = 50): Promise<PairAllocation[]> {
   const rows = await queryO2<{
     ts: number;
     currentApr: number;
@@ -147,7 +205,7 @@ export async function getPairAllocations(
     targetAllocations: string;
     currentAllocations: string;
   }>(
-    `SELECT ts, currentApr, optimalApr, improvement, decision, targetAllocations, currentAllocations FROM pair_allocations WHERE pairId = '${esc(pairId)}' ORDER BY ts DESC`,
+    `SELECT ${PAIR_ALLOC_COLS} FROM pair_allocations WHERE pairid = '${esc(pairId)}' ORDER BY ts DESC`,
     limit,
   );
   return rows.map(mapPairAllocRow);
@@ -155,7 +213,11 @@ export async function getPairAllocations(
 
 function parseJsonField<T>(v: unknown, fallback: T): T {
   if (typeof v !== "string") return (v ?? fallback) as T;
-  try { return JSON.parse(v); } catch { return fallback; }
+  try {
+    return JSON.parse(v);
+  } catch {
+    return fallback;
+  }
 }
 
 function mapPairAllocRow(r: {
@@ -180,10 +242,7 @@ function mapPairAllocRow(r: {
 
 // ---- Tx Log ----
 
-export async function getTxLogs(
-  pairId: string,
-  limit = 50,
-): Promise<TxLogEntry[]> {
+export async function getTxLogs(pairId: string, limit = 50): Promise<TxLogEntry[]> {
   const rows = await queryO2<{
     ts: number;
     decisionType: string;
@@ -204,7 +263,7 @@ export async function getTxLogs(
     actualAllocationPct: number;
     allocationErrorPct: number;
   }>(
-    `SELECT ts, decisionType, opType, pool, chain, txHash, status, gasUsed, gasPrice, inputToken, inputAmount, inputUsd, outputToken, outputAmount, outputUsd, targetAllocationPct, actualAllocationPct, allocationErrorPct FROM tx_log WHERE pairId = '${esc(pairId)}' ORDER BY ts DESC`,
+    `SELECT ts, decisiontype, optype, pool, chain, txhash, status, gasused, gasprice, inputtoken, inputamount, inputusd, outputtoken, outputamount, outputusd, targetallocationpct, actualallocationpct, allocationerrorpct FROM tx_log WHERE pairid = '${esc(pairId)}' ORDER BY ts DESC`,
     limit,
   );
   return rows.map((r) => ({
@@ -237,7 +296,7 @@ export async function getEpochSnapshots(
   toTs?: number,
   limit?: number,
 ): Promise<EpochSnapshot[]> {
-  let sql = `SELECT pairId, epoch, ts, decision, portfolioValueUsd, feesEarnedUsd, gasSpentUsd, ilUsd, netPnlUsd, rangeEfficiency, currentApr, optimalApr, positionsCount FROM epoch_snapshots WHERE pairId = '${esc(pairId)}'`;
+  let sql = `SELECT pairid, epoch, ts, decision, portfoliovalueusd, feesearnedusd, gasspentusd, ilusd, netpnlusd, rangeefficiency, currentapr, optimalapr, positionscount FROM epoch_snapshots WHERE pairid = '${esc(pairId)}'`;
   if (fromTs !== undefined) sql += ` AND ts >= ${fromTs}`;
   if (toTs !== undefined) sql += ` AND ts <= ${toTs}`;
   sql += ` ORDER BY ts ASC`;
@@ -246,57 +305,47 @@ export async function getEpochSnapshots(
 
 // ---- Kill-Switch Queries ----
 
-/** Per-epoch net yield: gross APR minus annualized gas + IL costs. */
-function annualize(costUsd: number, portfolioValueUsd: number): number {
-  return portfolioValueUsd > 0 ? (costUsd / portfolioValueUsd) * EPOCHS_PER_YEAR : 0;
+function annualize(costUsd: number, portfolioValueUsd: number, cycleSec: number): number {
+  const intervalsPerYear = SECONDS_PER_YEAR / cycleSec;
+  return portfolioValueUsd > 0 ? (costUsd / portfolioValueUsd) * intervalsPerYear : 0;
 }
 
-export async function getRecentYields(
-  pairId: string,
-  limit = 24,
-): Promise<number[]> {
+export async function getRecentYields(pairId: string, limit = 24, cycleSec = 900): Promise<number[]> {
   const rows = await queryO2<{
     currentApr: number;
     gasSpentUsd: number;
     ilUsd: number;
     portfolioValueUsd: number;
   }>(
-    `SELECT currentApr, gasSpentUsd, ilUsd, portfolioValueUsd FROM epoch_snapshots WHERE pairId = '${esc(pairId)}' ORDER BY ts DESC`,
+    `SELECT currentapr, gasspentusd, ilusd, portfoliovalueusd FROM epoch_snapshots WHERE pairid = '${esc(pairId)}' ORDER BY ts DESC`,
     limit,
   );
   if (rows.length >= limit) {
     return rows
       .map((r) => {
-        const gasCostApr = annualize(r.gasSpentUsd, r.portfolioValueUsd);
-        const ilApr = annualize(r.ilUsd, r.portfolioValueUsd);
+        const gasCostApr = annualize(r.gasSpentUsd, r.portfolioValueUsd, cycleSec);
+        const ilApr = annualize(r.ilUsd, r.portfolioValueUsd, cycleSec);
         return r.currentApr - gasCostApr - ilApr;
       })
       .reverse();
   }
-  // Fallback: gross APR from pair_allocations
   const allocRows = await queryO2<{ currentApr: number }>(
-    `SELECT currentApr FROM pair_allocations WHERE pairId = '${esc(pairId)}' ORDER BY ts DESC`,
+    `SELECT currentapr FROM pair_allocations WHERE pairid = '${esc(pairId)}' ORDER BY ts DESC`,
     limit,
   );
   return allocRows.map((r) => r.currentApr).reverse();
 }
 
-export async function getRecentRsTimestamps(
-  pairId: string,
-  sinceTs: number,
-): Promise<number[]> {
+export async function getRecentRsTimestamps(pairId: string, sinceTs: number): Promise<number[]> {
   const rows = await queryO2<{ ts: number }>(
-    `SELECT ts FROM pair_allocations WHERE pairId = '${esc(pairId)}' AND decision = 'RS' AND ts > ${sinceTs} ORDER BY ts ASC`,
+    `SELECT ts FROM pair_allocations WHERE pairid = '${esc(pairId)}' AND decision = 'RS' AND ts > ${sinceTs} ORDER BY ts ASC`,
   );
   return rows.map((r) => r.ts);
 }
 
-export async function getTrailingTxCount(
-  pairId: string,
-  sinceTs: number,
-): Promise<number> {
+export async function getTrailingTxCount(pairId: string, sinceTs: number): Promise<number> {
   const rows = await queryO2<{ cnt: number }>(
-    `SELECT COUNT(*) as cnt FROM tx_log WHERE pairId = '${esc(pairId)}' AND ts > ${sinceTs}`,
+    `SELECT COUNT(*) as cnt FROM tx_log WHERE pairid = '${esc(pairId)}' AND ts > ${sinceTs}`,
     1,
   );
   return rows[0]?.cnt ?? 0;

@@ -47,6 +47,14 @@ function emit(level: Level, msg: string, fields?: LogFields, extra?: unknown[]) 
   }
 }
 
+/** Read LOG_LEVEL from env and apply. Call once per process entry point. */
+export function initLogLevel() {
+  const level = process.env.LOG_LEVEL || "info";
+  if (level in LEVELS) {
+    minLevel = level as Level;
+  }
+}
+
 export const structuredLog = {
   setLevel(l: Level) {
     minLevel = l;

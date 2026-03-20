@@ -5,9 +5,7 @@ import {
   O2_FETCH_TIMEOUT_MS,
   O2_MAX_BUFFER_PER_STREAM,
 } from "../config/params";
-
-/** BigInt-safe JSON replacer. */
-const bigintReplacer = (_: string, v: unknown) => (typeof v === "bigint" ? v.toString() : v);
+import { bigintReplacer } from "../utils";
 
 type ResponseCb = (status: number) => void;
 
@@ -41,14 +39,30 @@ class TcpTransport {
       hostname: this.host,
       port: this.port,
       socket: {
-        data(_, chunk) { self.handleChunk(chunk); },
-        drain() { self.onDrain(); },
-        close() { self.onDisconnect(); },
-        error(_, e) { console.error(`[O2 TCP] ${e.message}`); self.onDisconnect(); },
+        data(_, chunk) {
+          self.handleChunk(chunk);
+        },
+        drain() {
+          self.onDrain();
+        },
+        close() {
+          self.onDisconnect();
+        },
+        error(_, e) {
+          console.error(`[O2 TCP] ${e.message}`);
+          self.onDisconnect();
+        },
       },
     }).then(
-      (s) => { self.sock = s; self.connectP = null; return true; },
-      () => { self.connectP = null; return false; },
+      (s) => {
+        self.sock = s;
+        self.connectP = null;
+        return true;
+      },
+      () => {
+        self.connectP = null;
+        return false;
+      },
     );
     return this.connectP;
   }
@@ -57,7 +71,10 @@ class TcpTransport {
     this.sock = null;
     this.resBuf = "";
     this.pendingWrite = null;
-    if (this.writeResolve) { this.writeResolve(false); this.writeResolve = null; }
+    if (this.writeResolve) {
+      this.writeResolve(false);
+      this.writeResolve = null;
+    }
     this.onResponse?.(0);
     this.onResponse = null;
   }
@@ -86,7 +103,9 @@ class TcpTransport {
     } else {
       this.pendingWrite = buf;
     }
-    return new Promise<boolean>((resolve) => { this.writeResolve = resolve; });
+    return new Promise<boolean>((resolve) => {
+      this.writeResolve = resolve;
+    });
   }
 
   private handleChunk(chunk: Buffer) {
@@ -149,14 +168,20 @@ class TcpTransport {
       `Connection: keep-alive\r\n\r\n${body}`;
 
     const written = await this.writeAll(raw);
-    if (!written) { this.sock = null; return 0; }
+    if (!written) {
+      this.sock = null;
+      return 0;
+    }
 
     return new Promise<number>((resolve) => {
       const timer = setTimeout(() => {
         if (this.onResponse === cb) this.onResponse = null;
         resolve(0);
       }, O2_FETCH_TIMEOUT_MS);
-      const cb: ResponseCb = (s) => { clearTimeout(timer); resolve(s); };
+      const cb: ResponseCb = (s) => {
+        clearTimeout(timer);
+        resolve(s);
+      };
       this.onResponse = cb;
     });
   }
@@ -165,7 +190,10 @@ class TcpTransport {
     this.sock?.end();
     this.sock = null;
     this.pendingWrite = null;
-    if (this.writeResolve) { this.writeResolve(false); this.writeResolve = null; }
+    if (this.writeResolve) {
+      this.writeResolve(false);
+      this.writeResolve = null;
+    }
     this.onResponse?.(0);
     this.onResponse = null;
     for (const req of this.queue) req.resolve(0);
@@ -288,4 +316,9 @@ export function ingestToO2(stream: string, entries: Record<string, unknown>[]) {
     stream,
     entries.map((e) => ({ _timestamp: new Date().toISOString(), ...e })),
   );
+}
+
+/** Await drain of all buffered O2 entries. Use between large batch ingests. */
+export async function flushO2(): Promise<void> {
+  await getO2Client()?.flush();
 }

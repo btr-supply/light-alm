@@ -1,9 +1,6 @@
 import type { RedisClient } from "bun";
-import type { Position, DexId } from "../types";
-
-/** BigInt-safe JSON serializer for Position fields. */
-const toJson = (v: unknown) =>
-  JSON.stringify(v, (_, val) => (typeof val === "bigint" ? val.toString() : val));
+import type { Position } from "../types";
+import { bigintReplacer } from "../utils";
 
 /** Deserialize a Position from DragonflyDB JSON. */
 function parsePosition(raw: string): Position {
@@ -16,104 +13,104 @@ function parsePosition(raw: string): Position {
   };
 }
 
-/** DragonflyDB key schema for per-pair CRUD state. */
-const K = {
-  positions: (pairId: string) => `btr:pair:${pairId}:positions`,
-  optimizer: (pairId: string) => `btr:pair:${pairId}:optimizer`,
-  epoch: (pairId: string) => `btr:pair:${pairId}:epoch`,
-  regimeSuppress: (pairId: string) => `btr:pair:${pairId}:regime_suppress`,
-  candleCursor: (pairId: string) => `btr:pair:${pairId}:candle_cursor`,
-} as const;
-
 /**
- * DragonflyDB-backed CRUD store for per-pair hot state.
- * One instance per worker, bound to a single pairId.
+ * DragonflyDB-backed CRUD store for per-entity hot state.
+ * One instance per worker, bound to a single entityId (strategy name or pair ID).
  *
  * Key layout:
- *   btr:pair:{pairId}:positions        HASH  field=id → JSON(Position)
- *   btr:pair:{pairId}:optimizer        STRING  JSON({vec, fitness})
- *   btr:pair:{pairId}:epoch            STRING  integer
- *   btr:pair:{pairId}:regime_suppress  STRING  integer (suppress-until-epoch)
- *   btr:pair:{pairId}:candle_cursor    STRING  integer (latest candle ts)
+ *   {prefix}:{entityId}:positions        HASH  field=id -> JSON(Position)
+ *   {prefix}:{entityId}:optimizer        STRING  JSON({vec, fitness})
+ *   {prefix}:{entityId}:epoch            STRING  integer
+ *   {prefix}:{entityId}:regime_suppress  STRING  integer (suppress-until-epoch)
+ *   {prefix}:{entityId}:candle_cursor    STRING  integer (latest candle ts)
  */
 export class DragonflyStore {
+  private keys: {
+    positions: string;
+    optimizer: string;
+    epoch: string;
+    regimeSuppress: string;
+    candleCursor: string;
+  };
+
   constructor(
     private redis: RedisClient,
-    private pairId: string,
-  ) {}
+    private entityId: string,
+    prefix = "btr:pair",
+  ) {
+    const base = `${prefix}:${entityId}`;
+    this.keys = {
+      positions: `${base}:positions`,
+      optimizer: `${base}:optimizer`,
+      epoch: `${base}:epoch`,
+      regimeSuppress: `${base}:regime_suppress`,
+      candleCursor: `${base}:candle_cursor`,
+    };
+  }
+
+  // ---- Private helpers ----
+
+  private async getNum(key: string): Promise<number> {
+    const raw = await this.redis.get(key);
+    return raw ? Number(raw) : 0;
+  }
+
+  private async setNum(key: string, val: number): Promise<void> {
+    await this.redis.set(key, String(val));
+  }
+
+  private async getJson<T>(key: string): Promise<T | null> {
+    const raw = await this.redis.get(key);
+    return raw ? JSON.parse(raw) as T : null;
+  }
+
+  private async setJson<T>(key: string, val: T): Promise<void> {
+    await this.redis.set(key, JSON.stringify(val));
+  }
 
   // ---- Positions ----
 
   async savePosition(p: Position): Promise<void> {
-    await this.redis.send("HSET", [K.positions(this.pairId), p.id, toJson(p)]);
+    await this.redis.send("HSET", [this.keys.positions, p.id, JSON.stringify(p, bigintReplacer)]);
   }
 
   async getPositions(): Promise<Position[]> {
-    const all = await this.redis.send("HVALS", [K.positions(this.pairId)]);
+    const all = await this.redis.send("HVALS", [this.keys.positions]);
     if (!all || !Array.isArray(all)) return [];
     return (all as string[]).map(parsePosition);
   }
 
   async deletePosition(id: string): Promise<void> {
-    await this.redis.send("HDEL", [K.positions(this.pairId), id]);
+    await this.redis.send("HDEL", [this.keys.positions, id]);
   }
 
   // ---- Optimizer State ----
 
-  async getOptimizerState(): Promise<{ vec: number[]; fitness: number } | null> {
-    const raw = await this.redis.get(K.optimizer(this.pairId));
-    if (!raw) return null;
-    return JSON.parse(raw) as { vec: number[]; fitness: number };
-  }
-
-  async saveOptimizerState(vec: number[], fitness: number): Promise<void> {
-    await this.redis.set(K.optimizer(this.pairId), JSON.stringify({ vec, fitness }));
-  }
+  getOptimizerState() { return this.getJson<{ vec: number[]; fitness: number }>(this.keys.optimizer); }
+  saveOptimizerState(vec: number[], fitness: number) { return this.setJson(this.keys.optimizer, { vec, fitness }); }
 
   // ---- Epoch Counter ----
 
-  async getEpoch(): Promise<number> {
-    const raw = await this.redis.get(K.epoch(this.pairId));
-    return raw ? Number(raw) : 0;
-  }
+  getEpoch() { return this.getNum(this.keys.epoch); }
 
   async incrementEpoch(): Promise<number> {
-    const val = await this.redis.send("INCR", [K.epoch(this.pairId)]);
+    const val = await this.redis.send("INCR", [this.keys.epoch]);
     return Number(val);
   }
 
   // ---- Regime Suppress ----
 
-  async getRegimeSuppressUntil(): Promise<number> {
-    const raw = await this.redis.get(K.regimeSuppress(this.pairId));
-    return raw ? Number(raw) : 0;
-  }
-
-  async setRegimeSuppressUntil(epoch: number): Promise<void> {
-    await this.redis.set(K.regimeSuppress(this.pairId), String(epoch));
-  }
+  getRegimeSuppressUntil() { return this.getNum(this.keys.regimeSuppress); }
+  setRegimeSuppressUntil(epoch: number) { return this.setNum(this.keys.regimeSuppress, epoch); }
 
   // ---- Candle Cursor (latest stored candle timestamp) ----
 
-  async getLatestCandleTs(): Promise<number> {
-    const raw = await this.redis.get(K.candleCursor(this.pairId));
-    return raw ? Number(raw) : 0;
-  }
+  getLatestCandleTs() { return this.getNum(this.keys.candleCursor); }
+  setLatestCandleTs(ts: number) { return this.setNum(this.keys.candleCursor, ts); }
 
-  async setLatestCandleTs(ts: number): Promise<void> {
-    await this.redis.set(K.candleCursor(this.pairId), String(ts));
-  }
-
-  // ---- Cleanup (for worker shutdown / pair removal) ----
+  // ---- Cleanup (for worker shutdown / entity removal) ----
 
   async deleteAll(): Promise<void> {
-    const keys = [
-      K.positions(this.pairId),
-      K.optimizer(this.pairId),
-      K.epoch(this.pairId),
-      K.regimeSuppress(this.pairId),
-      K.candleCursor(this.pairId),
-    ];
-    await this.redis.send("DEL", keys);
+    await this.redis.send("DEL", Object.values(this.keys));
   }
 }

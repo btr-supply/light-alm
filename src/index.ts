@@ -1,7 +1,9 @@
 import { DragonflyStore } from "./data/store-dragonfly";
 import { runSingleCycle } from "./scheduler";
 import { registerPair } from "./state";
-import { log, isValidLogLevel, pct, errMsg } from "./utils";
+import { fmtPct as pct, errMsg } from "../shared/format";
+import { log } from "./utils";
+import { initLogLevel } from "./infra/logger";
 import { loadPairConfigs } from "./config/pairs";
 import { createRedis, KEYS, getWorkerState } from "./infra/redis";
 
@@ -18,7 +20,7 @@ BTR Light ALM - Autonomous Liquidity Manager
 Usage: bun src/index.ts [command]
 
 Commands:
-  run       Start the orchestrator (spawns workers + API server)
+  run       Start orchestrator + API server (default)
   status    Show current positions and metrics
   cycle     Run a single cycle for all pairs (no orchestration)
 
@@ -30,7 +32,7 @@ Environment:
   MAX_POSITIONS      Max positions per pair (default: 3)
   PRA_THRESHOLD      Pool re-allocation threshold (default: 0.05)
   RS_THRESHOLD       Range-shift threshold (default: 0.25)
-  API_PORT           API server port (default: 3001)
+  API_PORT           API server port (default: 40042)
   LOG_LEVEL          Log level: debug|info|warn|error (default: info)
   DRAGONFLY_URL      DragonflyDB connection (default: redis://localhost:6379)
   O2_URL             OpenObserve URL (optional)
@@ -40,30 +42,34 @@ Environment:
     return;
   }
 
-  const level = process.env.LOG_LEVEL || "info";
-  if (isValidLogLevel(level)) {
-    log.setLevel(level);
-  } else {
-    log.warn(`Invalid LOG_LEVEL "${level}", using default "info"`);
-  }
+  initLogLevel();
 
-  // ---- run: delegate to orchestrator ----
+  // ---- run: spawn orchestrator + API as independent processes ----
   if (command === "run") {
-    log.info("Starting orchestrator...");
-    const orchestratorPath = new URL("orchestrator.ts", import.meta.url).pathname;
-    const proc = Bun.spawn(["bun", orchestratorPath], {
-      env: process.env,
-      stdout: "inherit",
-      stderr: "inherit",
-    });
+    const resolve = (name: string) => new URL(name, import.meta.url).pathname;
+    const spawn = (entry: string) =>
+      Bun.spawn(["bun", resolve(entry)], {
+        env: process.env,
+        stdout: "inherit",
+        stderr: "inherit",
+      });
 
-    // Forward signals to orchestrator
-    const forward = () => proc.kill();
+    log.info("Starting orchestrator + API server...");
+    const procs = [spawn("orchestrator.ts"), spawn("api-server.ts")];
+
+    const forward = () =>
+      procs.forEach((p) => {
+        try {
+          p.kill();
+        } catch {}
+      });
     process.on("SIGINT", forward);
     process.on("SIGTERM", forward);
 
-    await proc.exited;
-    process.exitCode = proc.exitCode ?? 0;
+    // Exit when any child exits (orchestrator crash = full restart by Docker)
+    const results = await Promise.race(procs.map((p) => p.exited));
+    forward(); // kill the other process
+    process.exitCode = typeof results === "number" ? results : 1;
     return;
   }
 
@@ -93,7 +99,6 @@ Environment:
           );
         }
       } else {
-        // No workers registered — show configured pairs with DragonflyDB positions
         for (const pair of pairs) {
           const store = new DragonflyStore(redis, pair.id);
           const positions = await store.getPositions();

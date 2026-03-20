@@ -1,18 +1,42 @@
 import ccxt, { type Exchange } from "ccxt";
+import type { RedisClient } from "bun";
 import type { Candle } from "../types";
 import type { DragonflyStore } from "./store-dragonfly";
 import {
   TF,
   TF_MS,
   OHLC_SOURCES,
-  BACKFILL_MS,
+  CANDLE_BUFFER_MS,
   OHLC_FETCH_LIMIT,
   OHLC_MAX_ITERATIONS,
   OHLC_LATEST_LOOKBACK_CANDLES,
   FETCH_TIMEOUT_MS,
+  EXCHANGE_RATE_LIMIT_MS,
 } from "../config/params";
 import { log } from "../utils";
 import { ingestToO2 } from "../infra/o2";
+import { reserveExchangeSlot } from "../infra/redis";
+
+/** Trim candles older than cutoff timestamp in-place. */
+export function trimCandles(candles: Candle[], cutoff: number): void {
+  const firstKeep = candles.findIndex((c) => c.ts >= cutoff);
+  if (firstKeep > 0) candles.splice(0, firstKeep);
+}
+
+// ---- Distributed exchange throttle (cross-process via DragonflyDB) ----
+
+let _throttleRedis: RedisClient | null = null;
+
+/** Bind a Redis client for cross-process exchange rate limiting. Call once at startup. */
+export function setOhlcRedis(redis: RedisClient): void {
+  _throttleRedis = redis;
+}
+
+async function throttleExchange(exchange: string): Promise<void> {
+  if (!_throttleRedis) return;
+  const waitMs = await reserveExchangeSlot(_throttleRedis, exchange, EXCHANGE_RATE_LIMIT_MS);
+  if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
+}
 
 // Cache exchange instances
 const exchanges = new Map<string, Exchange>();
@@ -37,6 +61,7 @@ export async function fetchCandles(
   since: number,
   limit = OHLC_FETCH_LIMIT,
 ): Promise<Candle[]> {
+  await throttleExchange(exchange);
   const ex = getExchange(exchange);
   const raw = await ex.fetchOHLCV(symbol, TF, since, limit);
   return raw.map((bar) => ({
@@ -124,18 +149,16 @@ async function fetchWeightedCandles(pair: string, since: number): Promise<Candle
 }
 
 /**
- * Backfill historical M1 data on startup (30 days).
+ * Backfill historical M1 data on startup (CANDLE_BUFFER_DAYS).
+ * Gap-aware: if a cursor exists within the buffer range, fetches only the gap.
  * Returns accumulated candles for the in-memory buffer.
  */
 export async function backfill(store: DragonflyStore, pair: string): Promise<Candle[]> {
-  const latestTs = await store.getLatestCandleTs();
   const now = Date.now();
-  const since = latestTs > 0 ? latestTs + TF_MS : now - BACKFILL_MS;
-
-  if (since >= now - TF_MS) {
-    log.info(`${pair} OHLC up to date`);
-    return [];
-  }
+  const savedCursor = await store.getLatestCandleTs();
+  const fullSince = now - CANDLE_BUFFER_MS;
+  // Gap-aware: if cursor is within buffer range, fetch only the gap
+  const since = (savedCursor > 0 && savedCursor > fullSince) ? savedCursor + TF_MS : fullSince;
 
   log.info(`Backfilling ${pair} M1 OHLC from ${new Date(since).toISOString()}`);
 
